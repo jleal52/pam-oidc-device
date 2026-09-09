@@ -164,4 +164,17 @@ expect "$scenario" "$WORK/err" "result=error"
 expect "$scenario" "$WORK/err" "reason=provider_unavailable"
 echo "PASS $scenario (${elapsed}s)"
 
+# (f) no config= in pam.d: the helper picks the file, and the image ships it
+# only at the 0.2 path. Guards the regression where the module hardcoded the
+# legacy path and a host enrolled with `oidc-ssh` wrote its identity to a file
+# that logins never read.
+scenario=default-config-path
+[[ ! -e /etc/security/pam_oidc_device.yaml ]] || fail "$scenario: the legacy path exists, the scenario proves nothing"
+start_mock --outcome approved --pending 1 --groups ssh:admin
+run_pamtester oidc-test-default systems
+[[ $RC -eq 0 ]] || fail "$scenario: exit $RC, want 0" "$WORK/out" "$WORK/err" "$WORK/mock.err"
+expect "$scenario" "$WORK/err" "result=success"
+stop_mock
+echo "PASS $scenario"
+
 echo "ALL PASS"

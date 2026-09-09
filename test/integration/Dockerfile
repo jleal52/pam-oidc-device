@@ -21,7 +21,11 @@ RUN dir="$(dirname "$(find /usr/lib -name pam_permit.so -print -quit)")" \
 COPY test/integration/pam.d-test        /etc/pam.d/oidc-test
 COPY test/integration/pam.d-test-ignore /etc/pam.d/oidc-test-ignore
 COPY test/integration/pam.d-test-acct   /etc/pam.d/oidc-test-acct
+COPY test/integration/pam.d-test-default /etc/pam.d/oidc-test-default
 COPY test/integration/config.yaml       /etc/pam_oidc_device.yaml
+# Only at the 0.2 path, never at the legacy one: that is what makes the
+# default-config scenario fail if the module stops honouring the search.
+COPY test/integration/config.yaml       /etc/oidc-ssh/config.yaml
 COPY build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
 COPY build/mock-provider                /usr/local/bin/mock-provider
 COPY test/integration/run.sh            /run.sh

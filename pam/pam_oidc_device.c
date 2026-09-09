@@ -21,7 +21,9 @@
  * wall-clock timeout maps to PAM_AUTHINFO_UNAVAIL (fail closed).
  *
  * Module arguments:
- *   config=<path>   configuration file (default /etc/security/pam_oidc_device.yaml)
+ *   config=<path>   configuration file (default: the first that exists of
+ *                   /etc/oidc-ssh/config.yaml and the legacy
+ *                   /etc/security/pam_oidc_device.yaml)
  *   helper=<path>   helper binary (default /usr/libexec/pam-oidc-device/pam-oidc-device-helper)
  *   timeout=<sec>   wall-clock bound for the whole exchange (default 420)
  *   debug           forwarded to the helper (verbose syslog)
@@ -50,7 +52,6 @@
 #include <security/pam_ext.h>
 #include <security/pam_modules.h>
 
-#define DEFAULT_CONFIG  "/etc/security/pam_oidc_device.yaml"
 #define DEFAULT_HELPER  "/usr/libexec/pam-oidc-device/pam-oidc-device-helper"
 #define DEFAULT_TIMEOUT 420
 #define MAX_LINE        8192
@@ -69,7 +70,13 @@ struct opts {
 
 static void parse_opts(pam_handle_t *pamh, int argc, const char **argv, struct opts *o)
 {
-    o->config = DEFAULT_CONFIG;
+    /* NULL, not a path: without `config=` the helper picks the file itself,
+     * trying /etc/oidc-ssh/config.yaml before the legacy
+     * /etc/security/pam_oidc_device.yaml. Hardcoding the legacy path here
+     * made that search dead code on the PAM path, so a host enrolled with
+     * `oidc-ssh` wrote its identity to one file while logins read the
+     * other. */
+    o->config = NULL;
     o->helper = DEFAULT_HELPER;
     o->timeout = DEFAULT_TIMEOUT;
     o->debug = 0;
@@ -308,8 +315,10 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
         const char *args[10];
         int n = 0;
         args[n++] = o.helper;
-        args[n++] = "--config";
-        args[n++] = o.config;
+        if (o.config) {
+            args[n++] = "--config";
+            args[n++] = o.config;
+        }
         args[n++] = "--user";
         args[n++] = user;
         args[n++] = "--rhost";
