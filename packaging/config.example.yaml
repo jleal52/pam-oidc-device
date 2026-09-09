@@ -1,0 +1,79 @@
+# pam_oidc_device configuration.
+#
+# Copy to /etc/security/pam_oidc_device.yaml (the default path; another
+# location can be given with the "config=" module argument), make it readable
+# by root only if it should stay private, and adjust the values below. The
+# file is read on every login attempt, so edits take effect immediately.
+#
+# How access works
+# ----------------
+# A login as local account X is allowed only if the identity provider returns
+# an ID token whose groups claim contains the group mapped to X in "users".
+# The provider authenticates the person; this file decides which group may
+# become which local account. Accounts that are not listed are ignored by the
+# module (PAM_IGNORE), so root and service users keep authenticating with
+# whatever else is in the PAM stack.
+#
+# Login time budget
+# -----------------
+# In the worst case a login takes about
+#     timeout + 4 x http_timeout
+# (device flow wait, plus discovery, device authorization request, token poll
+# and JWKS fetch). With the defaults below that is 300s + 4x10s = 340s. sshd
+# kills sessions that have not authenticated within LoginGraceTime, and its
+# default is 120s, so set in sshd_config
+#     LoginGraceTime 400
+# or lower "timeout" here so that the budget fits.
+
+# Issuer URL of the OpenID Connect provider (required). Discovery is fetched
+# from <issuer>/.well-known/openid-configuration and the value must match the
+# "issuer" field of that document byte for byte, trailing slash included.
+issuer: https://login.example.com
+
+# OAuth 2.0 client registered at the provider for the device flow (required).
+# It must be a public client with the device authorization grant enabled;
+# no client secret is used.
+client_id: ssh-bastion
+
+# Scopes requested from the provider. The username and groups claims below
+# must be released under these scopes. Default: "openid profile email groups".
+scope: openid profile email groups
+
+# Name shown to the user at the login prompt and, on some providers, in the
+# consent screen. "{{hostname}}" is replaced by the machine hostname.
+# Default: "{{hostname}}".
+device_name: "{{hostname}}"
+
+# ID token claim exported as the identity of the session. Default: "email".
+username_claim: email
+
+# ID token claim holding the list of groups (a JSON array of strings, or a
+# single string). Default: "groups".
+groups_claim: groups
+
+# Environment variable that receives username_claim in the session. OIDC_SUB
+# (the token subject) is exported alongside it. Default: "OIDC_USER".
+session_env: OIDC_USER
+
+# Time the user has to complete the sign-in in the browser. The provider's
+# device code lifetime applies as well; the shorter wins. Default: 300s.
+timeout: 300s
+
+# Tolerance for clock differences when checking token timestamps.
+# Default: 60s.
+clock_skew: 60s
+
+# Bound on every single HTTP request to the provider. Default: 10s.
+http_timeout: 10s
+
+# Plain http:// issuers are rejected unless this is true. It exists only for
+# tests against a local mock provider: never enable it on a real host, the
+# token would travel unencrypted and the issuer could be spoofed.
+# allow_insecure_http: false
+
+# Local account -> group required in groups_claim (at least one entry). Every
+# member of the group logs in as that account; the personal identity is kept
+# in the session environment (see session_env) and in the syslog audit line.
+users:
+  systems: ssh:admin
+  ops: ssh:ops

@@ -1,0 +1,54 @@
+# nfpm (https://nfpm.goreleaser.com) configuration for the deb and rpm
+# packages. Built by `make package VERSION=x.y.z ARCH=amd64|arm64`, which
+# exports the ${VERSION}, ${ARCH} and ${MULTIARCH} variables expanded below
+# and expects build/pam_oidc_device.so to have been compiled for ${ARCH}.
+#
+# The module path differs per family, so each override carries its own
+# complete contents list: nfpm replaces (does not merge) the list. "type: doc"
+# is an rpm-only marker (%doc); the deb packager drops such entries.
+name: pam-oidc-device
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: Jorge Leal
+description: |
+  PAM module that authenticates logins (typically SSH) against any OpenID
+  Connect provider with the OAuth 2.0 Device Authorization Grant (RFC 8628).
+  The user is shown a verification URL and a short code at the login prompt,
+  signs in from a browser on any device, and the module verifies the ID token
+  and maps users carrying a required group claim to a fixed local account.
+license: Apache-2.0
+homepage: https://github.com/jleal52/pam-oidc-device
+
+scripts:
+  postinstall: packaging/postinstall.sh
+
+overrides:
+  deb:
+    depends:
+      - libpam0g
+    contents:
+      - src: build/pam_oidc_device.so
+        dst: /usr/lib/${MULTIARCH}/security/pam_oidc_device.so
+        expand: true
+        file_info:
+          mode: 0644
+      - src: packaging/config.example.yaml
+        dst: /usr/share/doc/pam-oidc-device/config.example.yaml
+        file_info:
+          mode: 0644
+  rpm:
+    depends:
+      - pam
+    contents:
+      - src: build/pam_oidc_device.so
+        dst: /usr/lib64/security/pam_oidc_device.so
+        file_info:
+          mode: 0644
+      - src: packaging/config.example.yaml
+        dst: /usr/share/doc/pam-oidc-device/config.example.yaml
+        type: doc
+        file_info:
+          mode: 0644

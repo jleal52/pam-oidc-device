@@ -384,3 +384,28 @@ func TestErrorMessagesPrefixed(t *testing.T) {
 		t.Errorf("error %q must be prefixed with \"config: \"", got)
 	}
 }
+
+// TestPackagedExampleParses keeps packaging/config.example.yaml, the file
+// shipped under /usr/share/doc, in step with the schema: every key in it
+// must be known and every value valid.
+func TestPackagedExampleParses(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "packaging", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("Load(config.example.yaml) error: %v", err)
+	}
+	if cfg.Issuer != "https://login.example.com" || cfg.ClientID != "ssh-bastion" {
+		t.Fatalf("unexpected issuer/client_id: %q / %q", cfg.Issuer, cfg.ClientID)
+	}
+	if cfg.AllowInsecureHTTP {
+		t.Fatal("the shipped example must not enable allow_insecure_http")
+	}
+	for _, u := range []string{"systems", "ops"} {
+		if _, ok := cfg.LookupUser(u); !ok {
+			t.Fatalf("example users map lacks %q", u)
+		}
+	}
+	// The example documents its own defaults; they must still be the defaults.
+	if cfg.Timeout != DefaultTimeout || cfg.HTTPTimeout != DefaultHTTPTimeout || cfg.ClockSkew != DefaultClockSkew {
+		t.Fatalf("example durations diverge from defaults: %s %s %s", cfg.Timeout, cfg.HTTPTimeout, cfg.ClockSkew)
+	}
+}
