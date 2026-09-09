@@ -1,6 +1,7 @@
 package testprovider
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/hmac"
 	"crypto/rsa"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -475,5 +477,46 @@ func TestSignHS256(t *testing.T) {
 	}
 	if claims["sub"] != "mallory" || claims["iss"] != p.Issuer() || claims["aud"] != DefaultClientID {
 		t.Errorf("claims = %v, want sub/iss/aud defaults applied", claims)
+	}
+}
+
+func TestWithListenAddrBindsFixedAddress(t *testing.T) {
+	// Reserve a free port, release it and ask the provider to take it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	p := newProvider(t, WithListenAddr(addr))
+	if p.Addr() != addr {
+		t.Errorf("Addr() = %q, want %q", p.Addr(), addr)
+	}
+	if want := "http://" + addr; p.Issuer() != want {
+		t.Errorf("Issuer() = %q, want %q", p.Issuer(), want)
+	}
+	doc := getJSON(t, p.Issuer()+"/.well-known/openid-configuration")
+	if doc["issuer"] != p.Issuer() {
+		t.Errorf("issuer = %v, want %q", doc["issuer"], p.Issuer())
+	}
+
+	// The address is now taken: a second provider on it must fail.
+	if _, err := New(WithListenAddr(addr)); err == nil {
+		t.Errorf("New(WithListenAddr(%q)) on a busy port: want error", addr)
+	}
+}
+
+func TestWithRequestLogRecordsMethodAndPath(t *testing.T) {
+	var buf bytes.Buffer
+	p := newProvider(t, WithRequestLog(&buf))
+
+	getJSON(t, p.URL()+"/.well-known/openid-configuration")
+	postForm(t, p.URL()+"/device_authorization", url.Values{"client_id": {"c"}})
+
+	got := buf.String()
+	want := "GET /.well-known/openid-configuration\nPOST /device_authorization\n"
+	if got != want {
+		t.Errorf("request log = %q, want %q", got, want)
 	}
 }

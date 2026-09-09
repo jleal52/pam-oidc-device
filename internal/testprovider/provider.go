@@ -17,7 +17,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -66,11 +68,24 @@ func WithInterval(sec int) Option { return func(p *Provider) { p.interval = sec 
 // WithExpiresIn sets the advertised device code lifetime in seconds (default 600).
 func WithExpiresIn(sec int) Option { return func(p *Provider) { p.expiresIn = sec } }
 
+// WithListenAddr binds the server to a fixed "host:port" instead of an
+// ephemeral loopback port, so that a process outside the test (a PAM
+// module under pamtester, for instance) can reach it at a known issuer
+// URL. New fails when the address cannot be bound.
+func WithListenAddr(addr string) Option { return func(p *Provider) { p.listenAddr = addr } }
+
+// WithRequestLog writes one "METHOD PATH" line per request to w. It lets a
+// test that only sees the provider from the outside assert which
+// endpoints were (or were not) called.
+func WithRequestLog(w io.Writer) Option { return func(p *Provider) { p.requestLog = w } }
+
 // Provider is an in-memory OIDC provider backed by an httptest.Server.
 // All methods are safe for concurrent use.
 type Provider struct {
-	server *httptest.Server
-	key    *rsa.PrivateKey
+	server     *httptest.Server
+	key        *rsa.PrivateKey
+	listenAddr string
+	requestLog io.Writer
 
 	mu sync.Mutex
 	// programmable behaviour
@@ -112,8 +127,36 @@ func New(opts ...Option) (*Provider, error) {
 	mux.HandleFunc("POST /device_authorization", p.handleDeviceAuthorization)
 	mux.HandleFunc("POST /token", p.handleToken)
 	mux.HandleFunc("GET /device", p.handleVerificationPage)
-	p.server = httptest.NewServer(mux)
+
+	var handler http.Handler = mux
+	if p.requestLog != nil {
+		handler = p.logRequests(mux)
+	}
+	if p.listenAddr == "" {
+		p.server = httptest.NewServer(handler)
+		return p, nil
+	}
+	ln, err := net.Listen("tcp", p.listenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("testprovider: listen on %s: %w", p.listenAddr, err)
+	}
+	p.server = httptest.NewUnstartedServer(handler)
+	// NewUnstartedServer already holds an ephemeral loopback listener;
+	// release it before swapping in the requested one.
+	_ = p.server.Listener.Close()
+	p.server.Listener = ln
+	p.server.Start()
 	return p, nil
+}
+
+// Addr returns the "host:port" the server is listening on.
+func (p *Provider) Addr() string { return p.server.Listener.Addr().String() }
+
+func (p *Provider) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(p.requestLog, "%s %s\n", r.Method, r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Close shuts down the HTTP server.
