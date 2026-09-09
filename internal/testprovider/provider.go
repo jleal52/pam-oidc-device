@@ -10,6 +10,7 @@ package testprovider
 
 import (
 	"crypto"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -214,6 +215,22 @@ func (p *Provider) SignIDToken(claims map[string]any) (string, error) {
 		return "", fmt.Errorf("testprovider: sign: %w", err)
 	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
+}
+
+// SignHS256 returns a JWT signed with HMAC-SHA256 over secret, carrying the
+// same default claims as SignIDToken and a header of "alg":"HS256" with the
+// provider's KeyID as "kid". It exists for algorithm-confusion tests: a
+// verifier that trusts the "alg" header could accept such a token when the
+// secret is the RSA public key material. A correct verifier must reject it.
+func (p *Provider) SignHS256(claims map[string]any, secret []byte) (string, error) {
+	header := map[string]any{"alg": "HS256", "typ": "JWT", "kid": KeyID}
+	signingInput, err := encodeJWT(header, p.withDefaultClaims(claims))
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(signingInput))
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
 // SignWithAlgNone returns an unsigned JWT ("alg":"none", empty signature)

@@ -2,6 +2,7 @@ package testprovider
 
 import (
 	"crypto"
+	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -433,5 +434,46 @@ func TestCorruptSignatureFailsVerification(t *testing.T) {
 	}
 	if _, _, err := verifyRS256(bad, pub); err == nil {
 		t.Fatalf("corrupted token verified")
+	}
+}
+
+func TestSignHS256(t *testing.T) {
+	p := newProvider(t)
+	secret := []byte("shared-secret")
+	tok, err := p.SignHS256(map[string]any{"sub": "mallory"}, secret)
+	if err != nil {
+		t.Fatalf("SignHS256: %v", err)
+	}
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
+	}
+	hdrJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hdr map[string]any
+	if err := json.Unmarshal(hdrJSON, &hdr); err != nil {
+		t.Fatal(err)
+	}
+	if hdr["alg"] != "HS256" || hdr["kid"] != KeyID {
+		t.Errorf("header = %v, want alg HS256 and kid %q", hdr, KeyID)
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if parts[2] != want {
+		t.Errorf("signature = %q, want HMAC-SHA256 over the signing input %q", parts[2], want)
+	}
+	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims["sub"] != "mallory" || claims["iss"] != p.Issuer() || claims["aud"] != DefaultClientID {
+		t.Errorf("claims = %v, want sub/iss/aud defaults applied", claims)
 	}
 }

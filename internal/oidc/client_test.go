@@ -2,10 +2,18 @@ package oidc_test
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,8 +132,8 @@ func TestNewRejectsPlainHTTPIssuer(t *testing.T) {
 		HTTPTimeout: time.Second,
 		HTTPClient:  &http.Client{Transport: failingTransport{t}},
 	})
-	if err == nil {
-		t.Fatal("New accepted an http:// issuer without AllowInsecureHTTP")
+	if !errors.Is(err, oidc.ErrDiscovery) {
+		t.Fatalf("err = %v, want ErrDiscovery", err)
 	}
 }
 
@@ -186,13 +194,18 @@ func TestWaitForTokenAfterPending(t *testing.T) {
 }
 
 func TestWaitForTokenHonoursSlowDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow_down forces a 5 s back-off (RFC 8628 §3.5)")
+	}
 	t.Parallel()
 	p := newProvider(t, testprovider.WithInterval(1))
 	p.SetSlowDownOnce()
 	c := newClient(t, p)
 	da := startFlow(t, c, "h")
 
+	start := time.Now()
 	tok, err := c.WaitForToken(context.Background(), da)
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("WaitForToken: %v", err)
 	}
@@ -201,6 +214,11 @@ func TestWaitForTokenHonoursSlowDown(t *testing.T) {
 	}
 	if got := p.PollCount(); got != 2 {
 		t.Errorf("PollCount = %d, want 2", got)
+	}
+	// First poll after 1 s answers slow_down; the interval then becomes
+	// 1+5 s, so the second (successful) poll cannot happen before ~7 s.
+	if elapsed < 6*time.Second {
+		t.Errorf("elapsed = %v, want >= 6s (slow_down must add 5 s to the interval)", elapsed)
 	}
 }
 
@@ -364,7 +382,7 @@ func TestVerifyIDTokenExpiredWithinSkew(t *testing.T) {
 	t.Parallel()
 	p := newProvider(t)
 	c := newClient(t, p)
-	raw, err := p.SignIDToken(map[string]any{"exp": time.Now().Add(-30 * time.Second).Unix()})
+	raw, err := p.SignIDToken(map[string]any{"sub": "user-1", "exp": time.Now().Add(-30 * time.Second).Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +431,7 @@ func TestVerifyIDTokenGroupsAbsent(t *testing.T) {
 	t.Parallel()
 	p := newProvider(t)
 	c := newClient(t, p)
-	raw, err := p.SignIDToken(map[string]any{"preferred_username": "carol"})
+	raw, err := p.SignIDToken(map[string]any{"sub": "user-1", "preferred_username": "carol"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +448,7 @@ func TestVerifyIDTokenGroupsNotArray(t *testing.T) {
 	t.Parallel()
 	p := newProvider(t)
 	c := newClient(t, p)
-	raw, err := p.SignIDToken(map[string]any{"groups": "admins"})
+	raw, err := p.SignIDToken(map[string]any{"sub": "user-1", "groups": "admins"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +461,7 @@ func TestVerifyIDTokenUsernameNotString(t *testing.T) {
 	t.Parallel()
 	p := newProvider(t)
 	c := newClient(t, p)
-	raw, err := p.SignIDToken(map[string]any{"preferred_username": 12345})
+	raw, err := p.SignIDToken(map[string]any{"sub": "user-1", "preferred_username": 12345})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,5 +481,346 @@ func TestIDTokenFromMissing(t *testing.T) {
 	_, err = oidc.IDTokenFrom((&oauth2.Token{}).WithExtra(map[string]any{"id_token": 42}))
 	if !errors.Is(err, oidc.ErrNoIDToken) {
 		t.Fatalf("non-string id_token: err = %v, want ErrNoIDToken", err)
+	}
+}
+
+// --- Review fixes: polling interval, endpoint schemes, error hygiene ---
+
+// TestWaitForTokenNegativeIntervalDoesNotPanic covers a provider answering
+// "interval": -1. Before clamping, x/oauth2 passed that straight to
+// time.NewTicker, which panics on non-positive durations. After clamping the
+// first poll happens after the RFC default of 5 s, so the test bounds the
+// wait with a context and only expects ErrTimeout.
+func TestWaitForTokenNegativeIntervalDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t, testprovider.WithInterval(-1))
+	c := newClient(t, p)
+	da := startFlow(t, c, "h")
+	if da.Interval != -1 {
+		t.Fatalf("Interval = %d, want -1 from the provider", da.Interval)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_, err := c.WaitForToken(ctx, da)
+	if !errors.Is(err, oidc.ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if got := p.PollCount(); got != 0 {
+		t.Errorf("PollCount = %d, want 0 (clamped interval is 5 s)", got)
+	}
+}
+
+// stubIssuer serves a discovery document plus device_authorization and
+// token endpoints supplied by the test. Handlers may be nil: the default
+// device_authorization handler issues a fixed device code with interval 1,
+// and the default token handler approves nothing (405).
+func stubIssuer(t *testing.T, tls bool, mutate func(doc map[string]any), deviceAuth, token http.HandlerFunc) (*httptest.Server, func() []string) {
+	t.Helper()
+	var (
+		srv   *httptest.Server
+		mu    sync.Mutex
+		paths []string
+	)
+	record := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			paths = append(paths, r.URL.Path)
+			mu.Unlock()
+			next(w, r)
+		}
+	}
+	if deviceAuth == nil {
+		deviceAuth = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"device_code":      "dc-1",
+				"user_code":        "ABCD-EFGH",
+				"verification_uri": srv.URL + "/device",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		}
+	}
+	if token == nil {
+		token = func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "not implemented", http.StatusMethodNotAllowed)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/openid-configuration", record(func(w http.ResponseWriter, _ *http.Request) {
+		doc := map[string]any{
+			"issuer":                        srv.URL,
+			"authorization_endpoint":        srv.URL + "/authorize",
+			"token_endpoint":                srv.URL + "/token",
+			"jwks_uri":                      srv.URL + "/jwks",
+			"device_authorization_endpoint": srv.URL + "/device_authorization",
+		}
+		if mutate != nil {
+			mutate(doc)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	mux.HandleFunc("POST /device_authorization", record(deviceAuth))
+	mux.HandleFunc("POST /token", record(token))
+	mux.HandleFunc("/", record(http.NotFound))
+	if tls {
+		srv = httptest.NewTLSServer(mux)
+	} else {
+		srv = httptest.NewServer(mux)
+	}
+	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+func TestNewAcceptsHTTPSEndpoints(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubIssuer(t, true, nil, nil, nil)
+	c, err := oidc.New(context.Background(), oidc.Options{
+		Issuer:     srv.URL,
+		ClientID:   "x",
+		Scope:      "openid",
+		HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("New over TLS: %v", err)
+	}
+	if c == nil {
+		t.Fatal("nil client")
+	}
+}
+
+func TestNewRejectsPlainHTTPEndpoints(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"device_authorization_endpoint", "token_endpoint", "jwks_uri"} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			srv, requests := stubIssuer(t, true, func(doc map[string]any) {
+				doc[field] = "http://" + strings.TrimPrefix(doc[field].(string), "https://")
+			}, nil, nil)
+			_, err := oidc.New(context.Background(), oidc.Options{
+				Issuer:     srv.URL,
+				ClientID:   "x",
+				Scope:      "openid",
+				HTTPClient: srv.Client(),
+			})
+			if !errors.Is(err, oidc.ErrDiscovery) {
+				t.Fatalf("err = %v, want ErrDiscovery", err)
+			}
+			if !strings.Contains(err.Error(), field) || !strings.Contains(err.Error(), "https") {
+				t.Errorf("error %q should name %s and https", err, field)
+			}
+			if got := requests(); len(got) != 1 || got[0] != "/.well-known/openid-configuration" {
+				t.Errorf("requests = %v, want only the discovery document", got)
+			}
+		})
+	}
+}
+
+func TestNewSkipsEndpointSchemeCheckWhenInsecure(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubIssuer(t, false, nil, nil, nil)
+	if _, err := oidc.New(context.Background(), oidc.Options{
+		Issuer:            srv.URL,
+		ClientID:          "x",
+		Scope:             "openid",
+		HTTPTimeout:       5 * time.Second,
+		AllowInsecureHTTP: true,
+	}); err != nil {
+		t.Fatalf("New with AllowInsecureHTTP over plain http endpoints: %v", err)
+	}
+}
+
+func TestNewRejectsNonPositiveHTTPTimeout(t *testing.T) {
+	t.Parallel()
+	for _, d := range []time.Duration{0, -time.Second} {
+		_, err := oidc.New(context.Background(), oidc.Options{
+			Issuer:      "https://idp.invalid",
+			ClientID:    "x",
+			HTTPTimeout: d,
+		})
+		if !errors.Is(err, oidc.ErrDiscovery) {
+			t.Fatalf("HTTPTimeout=%v: err = %v, want ErrDiscovery", d, err)
+		}
+		if !strings.Contains(err.Error(), "http timeout must be positive") {
+			t.Errorf("HTTPTimeout=%v: error %q should explain the timeout", d, err)
+		}
+	}
+}
+
+// rsaPublicKeyFromJWKS rebuilds the provider's RSA public key from the
+// public JWKS document, the way an attacker would obtain it.
+func rsaPublicKeyFromJWKS(t *testing.T, p *testprovider.Provider) *rsa.PublicKey {
+	t.Helper()
+	resp, err := http.Get(p.URL() + "/jwks") //nolint:gosec // test server URL
+	if err != nil {
+		t.Fatalf("GET /jwks: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var doc struct {
+		Keys []struct {
+			N string `json:"n"`
+			E string `json:"e"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode jwks: %v", err)
+	}
+	if len(doc.Keys) != 1 {
+		t.Fatalf("jwks has %d keys, want 1", len(doc.Keys))
+	}
+	n, err := base64.RawURLEncoding.DecodeString(doc.Keys[0].N)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := base64.RawURLEncoding.DecodeString(doc.Keys[0].E)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(new(big.Int).SetBytes(e).Int64())}
+}
+
+// TestVerifyIDTokenRejectsHS256WithPublicKey pins the algorithm allowlist:
+// a token HMAC-signed with the (public) RSA key material as the secret must
+// never verify, whatever encoding of the key the attacker guesses.
+func TestVerifyIDTokenRejectsHS256WithPublicKey(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	c := newClient(t, p)
+	pub := rsaPublicKeyFromJWKS(t, p)
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := map[string][]byte{
+		"pkix-der": der,
+		"pkix-pem": pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
+	}
+	for name, secret := range secrets {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := p.SignHS256(map[string]any{"preferred_username": "mallory", "groups": []string{"admins"}}, secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := verify(t, c, raw, 0)
+			if !errors.Is(err, oidc.ErrInvalidToken) {
+				t.Fatalf("err = %v (identity %+v), want ErrInvalidToken", err, id)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "HS256") || !strings.Contains(msg, "signature algorithm") {
+				t.Errorf("error %q should say the HS256 signature algorithm is not accepted", msg)
+			}
+		})
+	}
+}
+
+func TestVerifyIDTokenEmptySubject(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	c := newClient(t, p)
+	raw, err := p.SignIDToken(map[string]any{"sub": "", "preferred_username": "nobody"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verify(t, c, raw, 0); !errors.Is(err, oidc.ErrInvalidToken) {
+		t.Fatalf("err = %v, want ErrInvalidToken", err)
+	}
+}
+
+// nastyDescription is a provider error_description with newlines, tabs,
+// terminal escapes and a marker past the truncation limit.
+var nastyDescription = "HEAD-MARKER line one\n\tline two\r\n\x1b[31mred\x1b[0m " +
+	strings.Repeat("padding ", 60) + "TAIL-MARKER"
+
+func assertSanitized(t *testing.T, err error, status, code string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if strings.ContainsAny(msg, "\n\r\t\x1b") {
+		t.Errorf("error is not a single clean line: %q", msg)
+	}
+	if len(msg) > 300 {
+		t.Errorf("error is %d bytes long, want <= 300: %q", len(msg), msg)
+	}
+	for _, want := range []string{status, code, "HEAD-MARKER"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q should contain %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "TAIL-MARKER") {
+		t.Errorf("error %q should be truncated before the tail marker", msg)
+	}
+}
+
+func oauthErrorHandler(code, description string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": description})
+	}
+}
+
+func newStubClient(t *testing.T, srv *httptest.Server) *oidc.Client {
+	t.Helper()
+	c, err := oidc.New(context.Background(), oidc.Options{
+		Issuer:            srv.URL,
+		ClientID:          "x",
+		Scope:             "openid",
+		HTTPTimeout:       5 * time.Second,
+		AllowInsecureHTTP: true,
+	})
+	if err != nil {
+		t.Fatalf("oidc.New: %v", err)
+	}
+	return c
+}
+
+func TestStartDeviceAuthSanitizesProviderError(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubIssuer(t, false, nil, oauthErrorHandler("invalid_client", nastyDescription), nil)
+	c := newStubClient(t, srv)
+	_, err := c.StartDeviceAuth(context.Background(), "h")
+	assertSanitized(t, err, "400", "invalid_client")
+}
+
+func TestWaitForTokenSanitizesProviderError(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubIssuer(t, false, nil, nil, oauthErrorHandler("access_denied", nastyDescription))
+	c := newStubClient(t, srv)
+	da := startFlow(t, c, "h")
+	_, err := c.WaitForToken(context.Background(), da)
+	assertSanitized(t, err, "400", "access_denied")
+	if !errors.Is(err, oidc.ErrAccessDenied) {
+		t.Errorf("err = %v, want ErrAccessDenied to survive sanitization", err)
+	}
+}
+
+func TestWaitForTokenNeverEchoesRawBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubIssuer(t, false, nil, nil, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = fmt.Fprint(w, "<html><body>SECRET-BODY\nline two</body></html>")
+	})
+	c := newStubClient(t, srv)
+	da := startFlow(t, c, "h")
+	_, err := c.WaitForToken(context.Background(), da)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "SECRET-BODY") || strings.Contains(msg, "\n") {
+		t.Errorf("error leaks the raw response body: %q", msg)
+	}
+	if !strings.Contains(msg, "502") {
+		t.Errorf("error %q should mention the HTTP status", msg)
 	}
 }
