@@ -235,7 +235,8 @@ so nothing about it is verified, and the page MUST present the codes as
 requested by the machine rather than as an established fact. A provider that
 takes the parameter into account SHOULD compare it with the `groups` of the
 enrolment body and refuse a mismatch; a host therefore MUST send both lists
-with the same codes in the same order.
+with the same codes in the same order, trimmed, lowercased and without
+repeats.
 
 ## 7. Security considerations
 

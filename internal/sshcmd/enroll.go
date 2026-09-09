@@ -366,12 +366,25 @@ func configuredAccounts(cfg *config.Config) []string {
 // empty ones. It is applied exactly once per enrolment: the device
 // authorization request announces the result and the enrolment body repeats
 // it verbatim, so that what a person approved is what the provider records.
+// normaliseGroups trims, lowercases and de-duplicates the requested group
+// codes, keeping the order they were given in.
+//
+// De-duplication matters beyond tidiness: the same list is announced in the
+// device authorization request and repeated in the enrolment body, and a
+// provider that binds the approval to those codes may reject a list with
+// repeats. Normalising once, here, keeps the two requests identical.
 func normaliseGroups(in []string) []string {
 	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
 	for _, g := range in {
-		if g = strings.ToLower(strings.TrimSpace(g)); g != "" {
-			out = append(out, g)
+		if g = strings.ToLower(strings.TrimSpace(g)); g == "" {
+			continue
 		}
+		if _, dup := seen[g]; dup {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
 	}
 	return out
 }

@@ -283,6 +283,31 @@ func TestEnrollAnnouncesTheGroupsItClaims(t *testing.T) {
 	}
 }
 
+func TestEnrollDeduplicatesTheGroupsItClaims(t *testing.T) {
+	t.Parallel()
+	f := newEnrollFixture(t)
+
+	// Repeating --group is a harmless typo, but the same list is announced
+	// for approval and repeated in the enrolment body, and a provider that
+	// binds the approval to those codes may reject repeats.
+	err := Enroll(context.Background(), f.env.Env, EnrollOptions{
+		Name:   "test-host",
+		Groups: []string{"prod", "PROD", " prod "},
+	})
+	if err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+
+	if got := f.provider.params().Get("groups"); got != "prod" {
+		t.Errorf("groups = %q, want %q", got, "prod")
+	}
+	for _, h := range f.provider.hosts() {
+		if strings.Join(h.Groups, ",") != "prod" {
+			t.Errorf("stored groups = %v, want [prod]", h.Groups)
+		}
+	}
+}
+
 func TestEnrollWithoutGroupsSendsNoGroupsParameter(t *testing.T) {
 	t.Parallel()
 	f := newEnrollFixture(t)
