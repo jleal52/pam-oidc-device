@@ -13,7 +13,7 @@ PAM_TAGS    ?= pam
 BUILD_DIR   ?= build
 SO          ?= $(BUILD_DIR)/pam_oidc_device.so
 PAM_HEADER  ?= /usr/include/security/pam_modules.h
-DOCKER_IMG  ?= golang:1.24-bookworm
+DOCKER_IMG  ?= golang:1.26-bookworm
 GOMOD_CACHE ?= pam-oidc-device-gomod
 GOBUILD_CACHE ?= pam-oidc-device-gocache
 
