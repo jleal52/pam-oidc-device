@@ -8,10 +8,30 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `oidc-ssh`, a second binary next to the PAM module, with three
+  subcommands. `enroll` gives the host an Ed25519 identity and registers it
+  with the provider through a device flow that a person approves.
+  `authorized-keys` is what sshd runs as its `AuthorizedKeysCommand`: it asks
+  the provider which keys may open the requested account and prints them.
+  `status` reports what the host knows and whether it can reach the provider.
+- Last-known-good cache for `authorized-keys`. A provider that is unreachable
+  or answering 5xx falls back to the last successful answer while it is
+  younger than `cache_ttl`, and says so in syslog. Denials are never cached,
+  so revoking access still takes effect during an outage.
+- The packages create an unprivileged `oidc-ssh` system account with no shell
+  and no home, and lay down `/etc/oidc-ssh` (2750 root:oidc-ssh, setgid so
+  that what enrolment writes is readable by that account) and
+  `/var/cache/oidc-ssh` (0700). CI installs both packages on stock Debian 12
+  and Fedora 41 and checks all of it.
+- Integration scenarios against a real OpenSSH server for key-based login:
+  enrolment, a key login carrying `OIDC_USER` through `sudo`, an
+  unauthorized key falling back to the device flow, a provider outage served
+  from a warm cache and refused with a cold one, and `PermitUserEnvironment`
+  dropping an `environment=` option the server was not told to accept.
 - `docs/PROVIDER-CONTRACT.md`: the provider contract (v1) for key-based SSH
   access — host identity and EdDSA host assertions, `POST /hosts/enroll`,
   `GET /authorized-keys`, device-flow extensions (`host_assertion`,
-  `account`, `intent`) and `ssh_access_endpoint` discovery.
+  `account`, `intent`, `groups`) and `ssh_access_endpoint` discovery.
 - Configuration keys `api_base`, `host_id`, `identity_key` (default
   `/etc/oidc-ssh/host.key`), `cache_dir` (default `/var/cache/oidc-ssh`) and
   `cache_ttl` (default `24h`, `0s` disables the cache). Paths must be
@@ -20,6 +40,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The device authorization request now carries `host_assertion`, `account`
+  and `intent=login` when the host is enrolled, so a provider can identify
+  the machine and the account instead of trusting the unsigned `device_name`
+  hint. Without an identity the request is byte-for-byte the 0.1.1 one.
+- `enroll` announces the host groups it claims (`groups`) in the same
+  request, so the person approving sees what the machine is asking for.
+  Those groups decide who may log into it afterwards, and the enrolment body
+  that carries them is only sent after the approval.
 - The default configuration path is now `/etc/oidc-ssh/config.yaml`, shared
   by the PAM helper and `oidc-ssh`. `config.LoadDefault` still reads
   `/etc/security/pam_oidc_device.yaml` when the new path does not exist, so
@@ -38,6 +66,10 @@ All notable changes to this project are documented here. The format follows
   signal in the exit status then invalidated the result. The helper now gets
   a bounded grace period to exit on its own. Caught by the sshd integration
   test, where it failed roughly four logins in five.
+- The module always passed `--config /etc/security/pam_oidc_device.yaml` to
+  the helper, so the search order above never ran on the PAM path: a host
+  enrolled with `oidc-ssh` wrote its identity to one file while logins read
+  the other, and both files looked right. `config=` now defaults to unset.
 
 ## [0.1.1] - 2026-09-09
 

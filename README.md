@@ -3,11 +3,16 @@
 [![CI](https://github.com/jleal52/pam-oidc-device/actions/workflows/ci.yml/badge.svg)](https://github.com/jleal52/pam-oidc-device/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-A Linux PAM module that authenticates a login, typically SSH, by asking the
-person to approve it in a browser at their OpenID Connect provider, using the
-OAuth 2.0 Device Authorization Grant (RFC 8628). Anyone whose ID token carries
-the required group logs in as a fixed local account, so the server needs no
-per-person Unix users, no SSH keys to distribute and no directory sync.
+SSH access to Linux servers governed by your OpenID Connect provider, with no
+per-person Unix users and no keys to distribute by hand.
+
+Two ways in, and the provider decides both. A PAM module authenticates a login
+by asking the person to approve it in a browser, using the OAuth 2.0 Device
+Authorization Grant (RFC 8628). And an `AuthorizedKeysCommand` asks the
+provider, on each connection, which public keys may open the account being
+requested — the same identity, without the browser round trip. Either way the
+person lands on a fixed local account, and their identity follows them into
+the session.
 
 ```
 $ ssh systems@bastion
@@ -22,8 +27,9 @@ Enter, and the SSH session continues (pressing Enter early is fine: the module
 keeps polling until the approval arrives or the time runs out). Their identity is exported to the session as
 `OIDC_USER` and written to syslog, so a shared account stays attributable.
 
-Status: 0.1.0 — tested against an in-house OpenID Connect provider, on Debian
-12 and Fedora 41, amd64 and arm64.
+Status: 0.1.1 released; key-based login and enrolment are on `main`, unreleased.
+Tested against an in-house OpenID Connect provider, on Debian 12 and Fedora 41,
+amd64 and arm64.
 
 ## What it does, and what it does not
 
@@ -33,10 +39,12 @@ Status: 0.1.0 — tested against an in-house OpenID Connect provider, on Debian
   read-only staff).
 - Exports the identity to the session (`OIDC_USER`, `OIDC_SUB`) and logs one
   audit line per attempt to syslog (`authpriv`).
+- Serves the keys the provider says are authorised, so a user registers their
+  public key once and connects normally (see *Key-based login*).
 - Ignores accounts that are not mapped: root, service users and everyone else
   keep authenticating with the rest of the PAM stack.
 
-It does **not** create or sync users, manage SSH keys, or replace `sudo`
+It does **not** create or sync users, store private keys, or replace `sudo`
 policy. Each mapped local account must already exist. It does not cut sessions
 that are already open when a permission is revoked at the provider.
 
@@ -109,6 +117,17 @@ affected.
 The module polls at the interval the provider announces (clamped to 5..60 s),
 honours `slow_down`, and treats `access_denied` and `expired_token` as final.
 
+**Key-based login needs more than plain OIDC**, so it has its own normative
+specification: [`docs/PROVIDER-CONTRACT.md`](docs/PROVIDER-CONTRACT.md). It
+defines the host identity and the EdDSA host assertions, the enrolment and
+authorized-keys endpoints, the optional device-flow parameters, and the
+`ssh_access_endpoint` discovery entry. Nothing in this repository is tied to
+any particular provider; anything implementing that contract works.
+
+A provider that implements only plain OIDC still works for the device flow:
+the extra parameters are ignored by RFC 6749 §3.1, and the module falls back
+to the behaviour it had before they existed.
+
 ## Install
 
 ### From a release (deb / rpm)
@@ -120,20 +139,26 @@ signature (`.sig` + `.pem`) for every file. Verify before installing:
 
 ```sh
 cosign verify-blob \
-  --certificate pam-oidc-device_0.1.0_amd64.deb.pem \
-  --signature   pam-oidc-device_0.1.0_amd64.deb.sig \
+  --certificate pam-oidc-device_0.1.1_amd64.deb.pem \
+  --signature   pam-oidc-device_0.1.1_amd64.deb.sig \
   --certificate-identity-regexp 'https://github.com/jleal52/pam-oidc-device/.github/workflows/release.yml@refs/tags/v.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  pam-oidc-device_0.1.0_amd64.deb
+  pam-oidc-device_0.1.1_amd64.deb
 
-sudo apt-get install ./pam-oidc-device_0.1.0_amd64.deb   # Debian/Ubuntu
-sudo dnf install ./pam-oidc-device-0.1.0-1.x86_64.rpm    # Fedora/RHEL
+sudo apt-get install ./pam-oidc-device_0.1.1_amd64.deb   # Debian/Ubuntu
+sudo dnf install ./pam-oidc-device-0.1.1-1.x86_64.rpm    # Fedora/RHEL
 ```
 
+Use 0.1.1 or later: 0.1.0 does not load on Debian 12 (it needs a glibc symbol
+that distribution does not have).
+
 The package installs `pam_oidc_device.so` into the distribution's PAM module
-directory, the helper under `/usr/libexec/pam-oidc-device/`, and an annotated
-example configuration under
-`/usr/share/doc/pam-oidc-device/config.example.yaml`. It changes nothing else:
+directory, the helper and `oidc-ssh` under `/usr/libexec/pam-oidc-device/`,
+and an annotated example configuration under
+`/usr/share/doc/pam-oidc-device/config.example.yaml`. It also creates the
+unprivileged `oidc-ssh` system account that serves `AuthorizedKeysCommand`,
+with `/etc/oidc-ssh` and `/var/cache/oidc-ssh` owned so that account can read
+what enrolment writes. It changes nothing else:
 the module is inert until referenced from `/etc/pam.d`.
 
 ### From source
@@ -143,7 +168,7 @@ make so helper   # build/pam_oidc_device.so (C; Docker if libpam0g-dev is missin
 make check-so    # the three pam_sm_* symbols must be exported
 sudo install -m 0644 build/pam_oidc_device.so /usr/lib/$(gcc -print-multiarch)/security/
 sudo install -D -m 0755 build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
-make package VERSION=0.1.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
+make package VERSION=0.2.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
 ```
 
 Requirements: Go 1.26, a C compiler and `libpam0g-dev` (or Docker).
@@ -243,6 +268,79 @@ Defaults log_input, log_output
 systems ALL=(ALL) NOPASSWD:ALL
 ```
 
+## Key-based login
+
+Approving a browser prompt on every connection is fine for an occasional
+shell and painful for `scp`, `rsync` and everyday work. With key-based login
+the user keeps their own SSH key and the server asks the provider, on each
+connection, which keys may open the requested account.
+
+Nothing about the key leaves the user's machine: the provider stores and
+serves **public** keys, and sshd verifies the signature locally as always.
+The device flow stays as the fallback for whoever has no key registered yet.
+
+Enrol the host once, as root:
+
+```sh
+oidc-ssh enroll --issuer https://idp.example.com --client-id ssh-pam \
+    --name "$(hostname -s)" --group servers --account systems --account ops
+```
+
+It generates an Ed25519 identity in `/etc/oidc-ssh/host.key` if there is
+none, runs a device flow that somebody allowed to enrol hosts approves, and
+writes `host_id` and `api_base` back into the configuration, comments and
+all. The `--group` values are announced in the authorization request so the
+approver sees what the machine is claiming, and the provider may refuse an
+enrolment whose body does not match what was approved.
+
+Then, in `/etc/ssh/sshd_config`:
+
+```
+AuthorizedKeysCommand /usr/libexec/pam-oidc-device/oidc-ssh authorized-keys %u %f
+AuthorizedKeysCommandUser oidc-ssh
+PermitUserEnvironment OIDC_USER,OIDC_SUB
+
+Match User systems,ops
+    AuthenticationMethods publickey keyboard-interactive:pam
+    PubkeyAuthentication yes
+    AuthorizedKeysFile none
+```
+
+**Mind the separator.** In `AuthenticationMethods` a space lists
+alternatives, so the line above means "a key is enough, and a login without
+one falls back to the device flow". A comma requires *all* the methods it
+joins: `publickey,keyboard-interactive:pam` is how you turn the browser
+approval into a second factor on a host that warrants it. The two read alike
+and do opposite things.
+
+`AuthorizedKeysFile none` is deliberate. On a managed account the provider is
+the only source of keys, so a stray `~/.ssh/authorized_keys` grants nothing.
+`PermitUserEnvironment` is restricted to the two identity variables: sshd
+ignores any other `environment=` option in the keys it is served, which is
+what stops a compromised provider from setting `LD_PRELOAD` on your servers.
+
+Both files under `/etc/oidc-ssh` must be readable by the
+`AuthorizedKeysCommandUser`. The packages handle it with a setgid directory;
+if you install by hand, `host.key` and `config.yaml` want mode 0640 and group
+`oidc-ssh`.
+
+### When the provider is down
+
+`authorized-keys` keeps the last successful answer per account and
+fingerprint under `cache_dir`, and serves it if the provider is unreachable
+or answering 5xx and the entry is younger than `cache_ttl` (24 h by default,
+`0s` disables it). Every such login says `source=cache age=…` in syslog.
+
+Denials are never cached, and an empty answer is authoritative rather than an
+error, so removing somebody's access takes effect even while the provider is
+unavailable. What the cache buys is that a provider outage does not lock
+everybody out of every server at once; what it costs is that a host which
+already has a cached answer can keep honouring it for up to `cache_ttl`.
+
+`oidc-ssh status` prints the host identity, the groups and accounts from the
+last enrolment, the age of the cache and whether the provider answers. It is
+the first thing to run when somebody says they cannot get in.
+
 ## Attribution with shared accounts
 
 `last`, `who` and `sudo` see the local account. The person is recoverable from
@@ -302,6 +400,18 @@ Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
 | Unmapped users are denied instead of falling through | `auth required` used instead of `[success=done ignore=ignore default=die]` | Fix the control field. |
 | `slow_down` loops | Provider interval below what it accepts | The module already backs off as the RFC requires; check the provider's own limits. |
 
+Key-based login:
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| Key login is refused and falls straight to the device flow, syslog `result=empty lines=0` | The provider authorised nobody for that account on this host | Its access rules. An empty answer is a decision, not a failure. |
+| Every key login fails, syslog `result=error` mentioning permissions | `host.key` or `config.yaml` unreadable by the `AuthorizedKeysCommandUser` | `runuser -u oidc-ssh -- oidc-ssh status`. Both want mode 0640 and group `oidc-ssh`. |
+| Both a key and a browser approval are demanded on every login | `AuthenticationMethods` joined with a comma instead of a space | The comma requires all the methods it joins. |
+| The host was enrolled but logins still send no assertion | The PAM service passes an explicit `config=` pointing at another file than the one enrolment wrote | `oidc-ssh status` shows which file it reads; drop `config=` and let both agree. |
+| Access removed at the provider but the host still lets somebody in | A cached answer is still valid | `source=cache age=…` in syslog. Clear `cache_dir` or wait out `cache_ttl`; denials themselves are never cached. |
+| sshd logs `AuthorizedKeysCommand ... returned status 1` | Usage error (bad account name, missing argument) | Run the same command by hand as the command user. It exits 0 for every non-usage outcome on purpose. |
+| `OIDC_USER` is missing in the session after a key login | `PermitUserEnvironment` does not list it, or the provider did not send it | `PermitUserEnvironment OIDC_USER,OIDC_SUB`; sshd silently drops options it was not told to accept. |
+
 Test a service without sshd:
 
 ```sh
@@ -317,22 +427,28 @@ pamtester oidc-test systems authenticate
 ```sh
 make test          # unit tests (pure Go, no PAM headers needed)
 make lint          # golangci-lint (config in .golangci.yml)
-make so helper check-so   # build the C module (Docker fallback) and the Go helper; check exported symbols
+make so helper oidc-ssh check-so   # the C module (Docker fallback), the Go helper and the oidc-ssh binary; check exported symbols
 make integration          # pamtester scenarios in a Debian container against a mock provider
 make integration-sshd     # the same through a real OpenSSH server and client (fork model)
-make package VERSION=0.1.0 ARCH=amd64
+make package VERSION=0.2.0 ARCH=amd64
 ```
 
 Layout: `pam/pam_oidc_device.c` (the PAM module: exec the helper, relay the
 line protocol), `cmd/pam-oidc-device-helper` (the helper process),
-`internal/config` (YAML), `internal/oidc` (discovery, device flow, ID token
-verification, on `coreos/go-oidc` + `golang.org/x/oauth2`), `internal/auth`
-(the decision logic, testable without PAM), `internal/pamlog` (audit line,
+`cmd/oidc-ssh` (flag wiring only; the logic lives in `internal/sshcmd` so it
+is testable without building a binary or being root), `internal/config`
+(YAML), `internal/oidc` (discovery, device flow, ID token verification, on
+`coreos/go-oidc` + `golang.org/x/oauth2`), `internal/auth` (the decision
+logic, testable without PAM), `internal/hostid` (Ed25519 host identity and
+assertions), `internal/provider` (client for the provider contract),
+`internal/keycache` (last-known-good answers), `internal/pamlog` (audit line,
 sanitising), `internal/testprovider` + `cmd/mock-provider` (an in-memory
 provider for tests), `test/integration` (pamtester scenarios: approved,
 denied, wrong group, unmapped user under two stack controls, account stack
-ignore, provider down; and the same against a real `sshd`), `packaging`
-(nfpm).
+ignore, provider down, default configuration path; and, against a real
+`sshd`, enrolment, key login, unauthorized key with device-flow fallback,
+provider outage with a warm and a cold cache, and `PermitUserEnvironment`),
+`packaging` (nfpm).
 
 Contributions are welcome. Please keep the module provider-agnostic, add a
 test for every behaviour change, and run `make test lint integration` before
