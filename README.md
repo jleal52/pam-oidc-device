@@ -27,7 +27,7 @@ Enter, and the SSH session continues (pressing Enter early is fine: the module
 keeps polling until the approval arrives or the time runs out). Their identity is exported to the session as
 `OIDC_USER` and written to syslog, so a shared account stays attributable.
 
-Status: 0.1.1 released; key-based login and enrolment are on `main`, unreleased.
+Status: 0.2.0 — device flow and key-based login.
 Tested against an in-house OpenID Connect provider, on Debian 12 and Fedora 41,
 amd64 and arm64.
 
@@ -139,18 +139,19 @@ signature (`.sig` + `.pem`) for every file. Verify before installing:
 
 ```sh
 cosign verify-blob \
-  --certificate pam-oidc-device_0.1.1_amd64.deb.pem \
-  --signature   pam-oidc-device_0.1.1_amd64.deb.sig \
+  --certificate pam-oidc-device_0.2.0_amd64.deb.pem \
+  --signature   pam-oidc-device_0.2.0_amd64.deb.sig \
   --certificate-identity-regexp 'https://github.com/jleal52/pam-oidc-device/.github/workflows/release.yml@refs/tags/v.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  pam-oidc-device_0.1.1_amd64.deb
+  pam-oidc-device_0.2.0_amd64.deb
 
-sudo apt-get install ./pam-oidc-device_0.1.1_amd64.deb   # Debian/Ubuntu
-sudo dnf install ./pam-oidc-device-0.1.1-1.x86_64.rpm    # Fedora/RHEL
+sudo apt-get install ./pam-oidc-device_0.2.0_amd64.deb   # Debian/Ubuntu
+sudo dnf install ./pam-oidc-device-0.2.0-1.x86_64.rpm    # Fedora/RHEL
 ```
 
-Use 0.1.1 or later: 0.1.0 does not load on Debian 12 (it needs a glibc symbol
-that distribution does not have).
+Do not use 0.1.0: it does not load on Debian 12 (it needs a glibc symbol that
+distribution does not have). 0.1.1 loads, but reports some successful logins
+as failures; see the changelog.
 
 The package installs `pam_oidc_device.so` into the distribution's PAM module
 directory, the helper and `oidc-ssh` under `/usr/libexec/pam-oidc-device/`,
