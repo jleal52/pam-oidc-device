@@ -2,8 +2,11 @@ package testprovider
 
 import (
 	"bytes"
+	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,8 +17,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/jleal52/pam-oidc-device/internal/hostid"
 )
 
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code"
@@ -518,5 +527,548 @@ func TestWithRequestLogRecordsMethodAndPath(t *testing.T) {
 	want := "GET /.well-known/openid-configuration\nPOST /device_authorization\n"
 	if got != want {
 		t.Errorf("request log = %q, want %q", got, want)
+	}
+}
+
+// --- SSH provider contract (docs/PROVIDER-CONTRACT.md) ---
+
+// newHostIdentity generates a fresh Ed25519 host identity in a temp dir.
+func newHostIdentity(t *testing.T) *hostid.Identity {
+	t.Helper()
+	id, err := hostid.Generate(filepath.Join(t.TempDir(), "host.key"), "oidc-ssh@test")
+	if err != nil {
+		t.Fatalf("hostid.Generate: %v", err)
+	}
+	return id
+}
+
+// deviceFlowToken runs a complete device flow with the given extension
+// parameters and returns the token response.
+func deviceFlowToken(t *testing.T, p *Provider, extra url.Values) (int, map[string]any) {
+	t.Helper()
+	form := url.Values{
+		"client_id":   {"ssh-pam"},
+		"scope":       {"openid profile email groups"},
+		"device_name": {"host1"},
+	}
+	for k, v := range extra {
+		form[k] = v
+	}
+	status, body := postForm(t, p.URL()+"/device_authorization", form)
+	if status != http.StatusOK {
+		t.Fatalf("device_authorization: status %d body %v", status, body)
+	}
+	code, _ := body["device_code"].(string)
+	return poll(t, p, code)
+}
+
+// enrollToken obtains an access token through a device flow with intent=enroll.
+func enrollToken(t *testing.T, p *Provider) string {
+	t.Helper()
+	status, body := deviceFlowToken(t, p, url.Values{"intent": {"enroll"}})
+	if status != http.StatusOK {
+		t.Fatalf("token: status %d body %v", status, body)
+	}
+	at, _ := body["access_token"].(string)
+	if at == "" {
+		t.Fatalf("token: missing access_token in %v", body)
+	}
+	return at
+}
+
+func enrollRequest(t *testing.T, p *Provider, token string, body map[string]any) (int, map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, p.SSHBase()+"/hosts/enroll", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST enroll: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var out map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode enroll response: %v (body %q)", err, data)
+		}
+	}
+	return resp.StatusCode, out
+}
+
+func enrollBody(id *hostid.Identity, name string, accounts ...string) map[string]any {
+	return map[string]any{
+		"publicKey":    id.PublicKeyLine,
+		"name":         name,
+		"hostname":     name + ".internal.example",
+		"groups":       []string{"bastions"},
+		"accounts":     accounts,
+		"agentVersion": "0.2.0-test",
+	}
+}
+
+// enrollHost enrols id under name and returns the hostId.
+func enrollHost(t *testing.T, p *Provider, id *hostid.Identity, name string, accounts ...string) string {
+	t.Helper()
+	status, body := enrollRequest(t, p, enrollToken(t, p), enrollBody(id, name, accounts...))
+	if status != http.StatusCreated {
+		t.Fatalf("enroll: status %d body %v", status, body)
+	}
+	hostID, _ := body["hostId"].(string)
+	if hostID == "" {
+		t.Fatalf("enroll: missing hostId in %v", body)
+	}
+	return hostID
+}
+
+func assertion(t *testing.T, id *hostid.Identity, hostID, aud string) string {
+	t.Helper()
+	tok, err := id.Assertion(hostID, aud, nil)
+	if err != nil {
+		t.Fatalf("Assertion: %v", err)
+	}
+	return tok
+}
+
+// getKeys calls authorized-keys with the given bearer and query and returns
+// status, headers and body.
+func getKeys(t *testing.T, p *Provider, bearer string, query url.Values) (int, http.Header, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, p.SSHBase()+"/authorized-keys?"+query.Encode(), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET authorized-keys: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp.StatusCode, resp.Header, string(data)
+}
+
+func userKeyLine(t *testing.T, comment string) (string, string) {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatalf("NewPublicKey: %v", err)
+	}
+	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))) + " " + comment
+	return `environment="OIDC_USER=` + comment + `",environment="OIDC_SUB=sub-` + comment + `" ` + line,
+		ssh.FingerprintSHA256(sshPub)
+}
+
+func TestDiscoveryAdvertisesSSHAccessEndpoint(t *testing.T) {
+	p := newProvider(t)
+	doc := getJSON(t, p.URL()+"/.well-known/openid-configuration")
+	if doc["ssh_access_endpoint"] != p.SSHBase() {
+		t.Errorf("ssh_access_endpoint = %v, want %q", doc["ssh_access_endpoint"], p.SSHBase())
+	}
+	if p.SSHBase() != p.URL()+SSHBasePath || SSHBasePath != "/api/ssh" {
+		t.Errorf("SSHBase() = %q, want %q", p.SSHBase(), p.URL()+"/api/ssh")
+	}
+}
+
+func TestEnrollFlow(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+	token := enrollToken(t, p)
+
+	status, body := enrollRequest(t, p, token, enrollBody(id, "host01", "systems", "ops"))
+	if status != http.StatusCreated {
+		t.Fatalf("first enroll: status %d body %v", status, body)
+	}
+	hostID, _ := body["hostId"].(string)
+	if len(hostID) != 24 {
+		t.Errorf("hostId = %q, want 24 hex chars", hostID)
+	}
+	if body["name"] != "host01" {
+		t.Errorf("name = %v", body["name"])
+	}
+	if groups, _ := body["groups"].([]any); len(groups) != 1 || groups[0] != "bastions" {
+		t.Errorf("groups = %v", body["groups"])
+	}
+	if accounts, _ := body["accounts"].([]any); len(accounts) != 2 || accounts[0] != "systems" || accounts[1] != "ops" {
+		t.Errorf("accounts = %v", body["accounts"])
+	}
+	if p.LastIntent() != "enroll" {
+		t.Errorf("LastIntent = %q, want enroll", p.LastIntent())
+	}
+
+	// Re-enrolment with the same key and name updates metadata and keeps the id.
+	again := enrollBody(id, "host01", "systems")
+	status, body = enrollRequest(t, p, token, again)
+	if status != http.StatusOK {
+		t.Fatalf("re-enroll: status %d body %v", status, body)
+	}
+	if body["hostId"] != hostID {
+		t.Errorf("re-enroll hostId = %v, want %q", body["hostId"], hostID)
+	}
+	if accounts, _ := body["accounts"].([]any); len(accounts) != 1 || accounts[0] != "systems" {
+		t.Errorf("re-enroll accounts = %v, want [systems]", body["accounts"])
+	}
+	hosts := p.Hosts()
+	if len(hosts) != 1 {
+		t.Fatalf("Hosts() = %d entries, want 1", len(hosts))
+	}
+	if h := hosts[hostID]; h.Name != "host01" || h.Hostname != "host01.internal.example" || len(h.Accounts) != 1 || !h.Active {
+		t.Errorf("stored host = %+v", h)
+	}
+
+	// Same key under another name conflicts.
+	status, _ = enrollRequest(t, p, token, enrollBody(id, "host02", "systems"))
+	if status != http.StatusConflict {
+		t.Errorf("same key, other name: status %d, want 409", status)
+	}
+	// Taken name with another key conflicts too.
+	status, _ = enrollRequest(t, p, token, enrollBody(newHostIdentity(t), "host01", "systems"))
+	if status != http.StatusConflict {
+		t.Errorf("taken name, other key: status %d, want 409", status)
+	}
+	if len(p.Hosts()) != 1 {
+		t.Errorf("conflicting enrolments must not create hosts; got %d", len(p.Hosts()))
+	}
+}
+
+func TestEnrollRejectsBadTokens(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+
+	status, _ := enrollRequest(t, p, "", enrollBody(id, "host01", "systems"))
+	if status != http.StatusUnauthorized {
+		t.Errorf("no token: status %d, want 401", status)
+	}
+	status, _ = enrollRequest(t, p, "at-garbage", enrollBody(id, "host01", "systems"))
+	if status != http.StatusUnauthorized {
+		t.Errorf("garbage token: status %d, want 401", status)
+	}
+
+	// A token from a plain login flow may not enrol hosts.
+	tokStatus, tokBody := deviceFlowToken(t, p, nil)
+	if tokStatus != http.StatusOK {
+		t.Fatalf("login token: status %d body %v", tokStatus, tokBody)
+	}
+	if p.LastIntent() != "login" {
+		t.Errorf("LastIntent = %q, want login by default", p.LastIntent())
+	}
+	loginToken, _ := tokBody["access_token"].(string)
+	status, _ = enrollRequest(t, p, loginToken, enrollBody(id, "host01", "systems"))
+	if status != http.StatusForbidden {
+		t.Errorf("login-intent token: status %d, want 403", status)
+	}
+	if len(p.Hosts()) != 0 {
+		t.Errorf("no host must be created; got %d", len(p.Hosts()))
+	}
+}
+
+func TestEnrollValidatesBody(t *testing.T) {
+	p := newProvider(t)
+	token := enrollToken(t, p)
+	id := newHostIdentity(t)
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa: %v", err)
+	}
+	rsaPub, err := ssh.NewPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("NewPublicKey: %v", err)
+	}
+	cases := map[string]map[string]any{
+		"garbage key": {"publicKey": "not a key", "name": "h", "groups": []string{}, "accounts": []string{"a"}},
+		"rsa key":     {"publicKey": strings.TrimSpace(string(ssh.MarshalAuthorizedKey(rsaPub))), "name": "h", "groups": []string{}, "accounts": []string{"a"}},
+		"no name":     {"publicKey": id.PublicKeyLine, "groups": []string{}, "accounts": []string{"a"}},
+		"no groups":   {"publicKey": id.PublicKeyLine, "name": "h", "accounts": []string{"a"}},
+		"no accounts": {"publicKey": id.PublicKeyLine, "name": "h", "groups": []string{}},
+	}
+	for name, body := range cases {
+		status, resp := enrollRequest(t, p, token, body)
+		if status != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400 (body %v)", name, status, resp)
+		}
+	}
+	if len(p.Hosts()) != 0 {
+		t.Errorf("invalid enrolments must not create hosts; got %d", len(p.Hosts()))
+	}
+}
+
+func TestAuthorizedKeys(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+	hostID := enrollHost(t, p, id, "host01", "systems", "ops")
+
+	alice, aliceFP := userKeyLine(t, "alice")
+	bob, _ := userKeyLine(t, "bob")
+	p.SetAuthorizedKeys("systems", []string{alice, bob})
+
+	status, hdr, body := getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), url.Values{"account": {"systems"}})
+	if status != http.StatusOK {
+		t.Fatalf("status %d body %q", status, body)
+	}
+	if ct := hdr.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if cc := hdr.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q", cc)
+	}
+	if body != alice+"\n"+bob+"\n" {
+		t.Errorf("body = %q, want both lines", body)
+	}
+	if p.LastKeysAccount() != "systems" || p.LastKeysFingerprint() != "" || p.LastKeysEnv() != "" {
+		t.Errorf("recorded account/fp/env = %q/%q/%q", p.LastKeysAccount(), p.LastKeysFingerprint(), p.LastKeysEnv())
+	}
+
+	// Fingerprint filter returns only the matching key.
+	status, _, body = getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), url.Values{
+		"account": {"systems"}, "fingerprint": {aliceFP}, "env": {"MY_USER"},
+	})
+	if status != http.StatusOK || body != alice+"\n" {
+		t.Errorf("fingerprint filter: status %d body %q", status, body)
+	}
+	if p.LastKeysFingerprint() != aliceFP || p.LastKeysEnv() != "MY_USER" {
+		t.Errorf("recorded fp/env = %q/%q", p.LastKeysFingerprint(), p.LastKeysEnv())
+	}
+
+	// An account with nothing programmed is an empty, authoritative 200.
+	status, _, body = getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), url.Values{"account": {"ops"}})
+	if status != http.StatusOK || body != "" {
+		t.Errorf("empty account: status %d body %q", status, body)
+	}
+	if p.KeysRequests() != 3 {
+		t.Errorf("KeysRequests = %d, want 3", p.KeysRequests())
+	}
+}
+
+func TestAuthorizedKeysRejectsBadAssertions(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+	hostID := enrollHost(t, p, id, "host01", "systems")
+	p.SetAuthorizedKeys("systems", []string{"ssh-ed25519 AAAA alice"})
+	q := url.Values{"account": {"systems"}}
+
+	// Replay: the same assertion twice.
+	tok := assertion(t, id, hostID, p.SSHBase())
+	if status, _, _ := getKeys(t, p, tok, q); status != http.StatusOK {
+		t.Fatalf("first use: status %d", status)
+	}
+	if status, _, _ := getKeys(t, p, tok, q); status != http.StatusUnauthorized {
+		t.Errorf("replay: status %d, want 401", status)
+	}
+	// Wrong audience.
+	if status, _, _ := getKeys(t, p, assertion(t, id, hostID, p.SSHBase()+"/"), q); status != http.StatusUnauthorized {
+		t.Errorf("wrong aud: status %d, want 401", status)
+	}
+	// Unknown host id.
+	if status, _, _ := getKeys(t, p, assertion(t, id, "000000000000000000000000", p.SSHBase()), q); status != http.StatusUnauthorized {
+		t.Errorf("unknown host: status %d, want 401", status)
+	}
+	// Signed by another key for a known host id.
+	if status, _, _ := getKeys(t, p, assertion(t, newHostIdentity(t), hostID, p.SSHBase()), q); status != http.StatusUnauthorized {
+		t.Errorf("wrong key: status %d, want 401", status)
+	}
+	// Outside the time window.
+	old, err := id.Assertion(hostID, p.SSHBase(), func() time.Time { return time.Now().Add(-5 * time.Minute) })
+	if err != nil {
+		t.Fatalf("Assertion: %v", err)
+	}
+	if status, _, _ := getKeys(t, p, old, q); status != http.StatusUnauthorized {
+		t.Errorf("expired: status %d, want 401", status)
+	}
+	// No bearer, garbage bearer.
+	if status, _, _ := getKeys(t, p, "", q); status != http.StatusUnauthorized {
+		t.Errorf("no bearer: status %d, want 401", status)
+	}
+	if status, _, _ := getKeys(t, p, "not.a.jwt", q); status != http.StatusUnauthorized {
+		t.Errorf("garbage bearer: status %d, want 401", status)
+	}
+	// Undeclared account.
+	if status, _, _ := getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), url.Values{"account": {"root"}}); status != http.StatusForbidden {
+		t.Errorf("undeclared account: status %d, want 403", status)
+	}
+	// Revoked host.
+	p.RevokeHost(hostID)
+	if status, _, _ := getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), q); status != http.StatusForbidden {
+		t.Errorf("revoked host: status %d, want 403", status)
+	}
+}
+
+func TestAuthorizedKeysOutcomes(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+	hostID := p.AddHost("host01", mustParseKey(t, id.PublicKeyLine), []string{"systems"}, nil)
+	q := url.Values{"account": {"systems"}}
+
+	p.SetKeysOutcome(KeysServerError)
+	status, _, _ := getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), q)
+	if status != http.StatusInternalServerError {
+		t.Errorf("KeysServerError: status %d, want 500", status)
+	}
+
+	p.SetKeysOutcome(KeysTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.SSHBase()+"/authorized-keys?"+q.Encode(), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+assertion(t, id, hostID, p.SSHBase()))
+	start := time.Now()
+	if _, err := http.DefaultClient.Do(req); err == nil { //nolint:bodyclose // the request must fail
+		t.Errorf("KeysTimeout: expected the client to time out")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("KeysTimeout: handler did not release on context cancellation")
+	}
+
+	p.SetKeysOutcome(KeysOK)
+	p.SetAuthorizedKeys("systems", []string{"ssh-ed25519 AAAA alice"})
+	status, _, body := getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), q)
+	if status != http.StatusOK || body != "ssh-ed25519 AAAA alice\n" {
+		t.Errorf("KeysOK: status %d body %q", status, body)
+	}
+}
+
+func mustParseKey(t *testing.T, line string) ssh.PublicKey {
+	t.Helper()
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		t.Fatalf("ParseAuthorizedKey: %v", err)
+	}
+	return pub
+}
+
+func TestDeviceAuthorizationRecordsExtensions(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+	hostID := enrollHost(t, p, id, "host01", "systems")
+	p.SetClaims(map[string]any{"groups": []string{"ssh-admins"}})
+
+	tok := assertion(t, id, hostID, p.SSHBase())
+	status, body := deviceFlowToken(t, p, url.Values{
+		"host_assertion": {tok}, "account": {"systems"}, "intent": {"login"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("token: status %d body %v", status, body)
+	}
+	if p.LastHostAssertion() != tok || p.LastAccount() != "systems" || p.LastIntent() != "login" {
+		t.Errorf("recorded assertion/account/intent = %q/%q/%q", p.LastHostAssertion(), p.LastAccount(), p.LastIntent())
+	}
+
+	idToken, _ := body["id_token"].(string)
+	_, claims, err := verifyRS256(idToken, publicKeyFromJWKS(t, p, KeyID))
+	if err != nil {
+		t.Fatalf("id_token: %v", err)
+	}
+	groups, _ := claims["groups"].([]any)
+	if len(groups) != 2 || groups[0] != "ssh-admins" || groups[1] != "ssh:systems" {
+		t.Errorf("groups = %v, want [ssh-admins ssh:systems]", claims["groups"])
+	}
+
+	// Without a host assertion the provider cannot apply host policy: no ssh:* group.
+	status, body = deviceFlowToken(t, p, url.Values{"account": {"systems"}})
+	if status != http.StatusOK {
+		t.Fatalf("plain token: status %d body %v", status, body)
+	}
+	idToken, _ = body["id_token"].(string)
+	_, claims, err = verifyRS256(idToken, publicKeyFromJWKS(t, p, KeyID))
+	if err != nil {
+		t.Fatalf("id_token: %v", err)
+	}
+	if groups, _ := claims["groups"].([]any); len(groups) != 1 || groups[0] != "ssh-admins" {
+		t.Errorf("plain flow groups = %v, want [ssh-admins]", claims["groups"])
+	}
+	if p.LastHostAssertion() != "" {
+		t.Errorf("LastHostAssertion = %q, want empty after a plain flow", p.LastHostAssertion())
+	}
+}
+
+func TestDeviceAuthorizationRejectsBadExtensions(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+	hostID := enrollHost(t, p, id, "host01", "systems")
+	base := url.Values{"client_id": {"ssh-pam"}, "scope": {"openid"}}
+	withParams := func(extra url.Values) url.Values {
+		form := url.Values{}
+		for k, v := range base {
+			form[k] = v
+		}
+		for k, v := range extra {
+			form[k] = v
+		}
+		return form
+	}
+
+	// Invalid assertion (wrong aud) is invalid_request.
+	status, body := postForm(t, p.URL()+"/device_authorization", withParams(url.Values{
+		"host_assertion": {assertion(t, id, hostID, "https://elsewhere.example/api/ssh")},
+	}))
+	expectError(t, status, body, "invalid_request")
+
+	// A valid assertion consumed by device_authorization cannot be replayed.
+	tok := assertion(t, id, hostID, p.SSHBase())
+	if status, body := postForm(t, p.URL()+"/device_authorization", withParams(url.Values{"host_assertion": {tok}})); status != http.StatusOK {
+		t.Fatalf("valid assertion: status %d body %v", status, body)
+	}
+	status, body = postForm(t, p.URL()+"/device_authorization", withParams(url.Values{"host_assertion": {tok}}))
+	expectError(t, status, body, "invalid_request")
+
+	// Unknown intent.
+	status, body = postForm(t, p.URL()+"/device_authorization", withParams(url.Values{"intent": {"delete"}}))
+	expectError(t, status, body, "invalid_request")
+
+	// SetRequireHost demands an assertion.
+	p.SetRequireHost(true)
+	status, body = postForm(t, p.URL()+"/device_authorization", withParams(nil))
+	expectError(t, status, body, "invalid_request")
+	if status, body := postForm(t, p.URL()+"/device_authorization", withParams(url.Values{
+		"host_assertion": {assertion(t, id, hostID, p.SSHBase())},
+	})); status != http.StatusOK {
+		t.Errorf("require host with assertion: status %d body %v", status, body)
+	}
+}
+
+func TestPolicyDeny(t *testing.T) {
+	p := newProvider(t)
+	id := newHostIdentity(t)
+	hostID := enrollHost(t, p, id, "host01", "systems")
+	p.SetAuthorizedKeys("systems", []string{"ssh-ed25519 AAAA alice"})
+	p.SetPolicyDeny(true)
+
+	status, body := deviceFlowToken(t, p, url.Values{
+		"host_assertion": {assertion(t, id, hostID, p.SSHBase())}, "account": {"systems"},
+	})
+	expectError(t, status, body, "access_denied")
+
+	// The same policy answers authorized-keys with an empty, authoritative 200.
+	status, _, keys := getKeys(t, p, assertion(t, id, hostID, p.SSHBase()), url.Values{"account": {"systems"}})
+	if status != http.StatusOK || keys != "" {
+		t.Errorf("policy deny keys: status %d body %q, want empty 200", status, keys)
+	}
+
+	// Flows without a host assertion are outside host policy and still succeed.
+	if status, body := deviceFlowToken(t, p, nil); status != http.StatusOK {
+		t.Errorf("plain flow under policy deny: status %d body %v", status, body)
 	}
 }

@@ -102,6 +102,8 @@ type Provider struct {
 	scope      string
 	deviceName string
 	pollCount  int
+	// SSH provider contract (ssh.go)
+	ssh sshState
 }
 
 // New generates an RSA-2048 signing key and starts the HTTP server.
@@ -116,6 +118,7 @@ func New(opts ...Option) (*Provider, error) {
 		outcome:   Approved,
 		interval:  1,
 		expiresIn: 600,
+		ssh:       newSSHState(),
 	}
 	for _, o := range opts {
 		o(p)
@@ -127,6 +130,8 @@ func New(opts ...Option) (*Provider, error) {
 	mux.HandleFunc("POST /device_authorization", p.handleDeviceAuthorization)
 	mux.HandleFunc("POST /token", p.handleToken)
 	mux.HandleFunc("GET /device", p.handleVerificationPage)
+	mux.HandleFunc("POST "+SSHBasePath+"/hosts/enroll", p.handleEnroll)
+	mux.HandleFunc("GET "+SSHBasePath+"/authorized-keys", p.handleAuthorizedKeys)
 
 	var handler http.Handler = mux
 	if p.requestLog != nil {
@@ -351,6 +356,7 @@ func (p *Provider) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
+		"ssh_access_endpoint":                   p.SSHBase(),
 	})
 }
 
@@ -378,6 +384,16 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 		writeError(w, "invalid_request", "client_id is required")
 		return
 	}
+	intent := r.PostForm.Get("intent")
+	switch intent {
+	case "":
+		intent = "login"
+	case "login", "enroll":
+	default:
+		writeError(w, "invalid_request", "intent must be login or enroll")
+		return
+	}
+	hostAssertion := r.PostForm.Get("host_assertion")
 	deviceCode, err := randomToken(32)
 	if err != nil {
 		writeError(w, "server_error", err.Error())
@@ -390,6 +406,26 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 	}
 
 	p.mu.Lock()
+	// Record the extension parameters first so a test can inspect what the
+	// client sent even when the request is refused below.
+	p.ssh.hostAssertion = hostAssertion
+	p.ssh.account = r.PostForm.Get("account")
+	p.ssh.intent = intent
+	p.ssh.flowHost = nil
+	if hostAssertion == "" && p.ssh.requireHost {
+		p.mu.Unlock()
+		writeError(w, "invalid_request", "host_assertion is required")
+		return
+	}
+	if hostAssertion != "" {
+		host, aerr := p.verifyHostAssertionLocked(hostAssertion, time.Now())
+		if aerr != nil {
+			p.mu.Unlock()
+			writeError(w, "invalid_request", "host_assertion: "+aerr.reason)
+			return
+		}
+		p.ssh.flowHost = host
+	}
 	p.clientID = clientID
 	p.scope = r.PostForm.Get("scope")
 	p.deviceName = r.PostForm.Get("device_name")
@@ -454,6 +490,17 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	for k, v := range p.claims {
 		claims[k] = v
 	}
+	// Host policy (contract §6): only flows that proved which host is
+	// asking are subject to it. The test policy allows everyone unless
+	// SetPolicyDeny is on.
+	hostFlow := p.ssh.flowHost != nil
+	if hostFlow && p.ssh.policyDeny && outcome == Approved {
+		outcome = Denied
+	}
+	if hostFlow && p.ssh.account != "" {
+		claims["groups"] = appendGroup(claims["groups"], "ssh:"+p.ssh.account)
+	}
+	intent := p.ssh.intent
 	p.mu.Unlock()
 
 	switch outcome {
@@ -472,8 +519,12 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "server_error", err.Error())
 			return
 		}
+		accessToken = "at-" + accessToken
+		p.mu.Lock()
+		p.ssh.accessTokens[accessToken] = issuedAT{intent: intent, exp: time.Now().Add(accessTokenLifetime)}
+		p.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token": "at-" + accessToken,
+			"access_token": accessToken,
 			"token_type":   "Bearer",
 			"expires_in":   300,
 			"scope":        scope,
@@ -532,6 +583,22 @@ func randomUserCode() (string, error) {
 		sb.WriteByte(alphabet[idx.Int64()])
 	}
 	return sb.String(), nil
+}
+
+// appendGroup returns the groups claim with g appended, accepting the
+// []string a test configures or the []any a decoded JSON document yields.
+// The input slice is never mutated.
+func appendGroup(groups any, g string) []any {
+	var out []any
+	switch gs := groups.(type) {
+	case []string:
+		for _, x := range gs {
+			out = append(out, x)
+		}
+	case []any:
+		out = append(out, gs...)
+	}
+	return append(out, g)
 }
 
 func cloneClaims(c map[string]any) map[string]any {
