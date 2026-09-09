@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-09
+
+### Fixed
+
+- The 0.1.0 module was built on a glibc 2.39 system with `_GNU_SOURCE`, which
+  made it reference `__isoc23_strtol` (GLIBC_2.38) and fail to load on Debian
+  12 / glibc 2.36 (`PAM unable to dlopen`). The module now uses POSIX feature
+  macros only, release builds compile it inside Debian 12, and CI enforces a
+  glibc 2.36 symbol ceiling (`make check-glibc`).
+
 ## [0.1.0] - 2026-09-09
 
 ### Added

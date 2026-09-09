@@ -35,6 +35,8 @@ jobs:
         run: go vet ./...
       - name: Build the C module natively and check exported symbols
         run: make so-native check-so
+      - name: Build the C module in Debian 12 and check the glibc ceiling
+        run: make so-docker check-so check-glibc
       - name: Build the helper
         run: make helper
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

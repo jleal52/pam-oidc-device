@@ -32,7 +32,7 @@ docker run --rm \
 	$(DOCKER_IMG) sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends libpam0g-dev >/dev/null && $(1); rc=$$?; chown -R "$$HOST_UID:$$HOST_GID" $(BUILD_DIR) 2>/dev/null; exit $$rc'
 endef
 
-.PHONY: test lint vet so so-native helper check-so package integration integration-sshd mock-provider clean
+.PHONY: test lint vet so so-native so-docker check-glibc helper check-so package integration integration-sshd mock-provider clean
 
 test:
 	$(GO) test ./...
@@ -59,6 +59,21 @@ so:
 		echo "$(PAM_HEADER) not found, building in Docker ($(DOCKER_IMG))"; \
 		$(call docker_run,make so-native); \
 	fi
+
+# Release build of the module: always inside Debian 12 so the object links
+# against glibc 2.36 symbols and loads on every supported distribution.
+# `check-glibc` enforces that ceiling on whatever is in build/.
+C_BUILD_IMG   ?= debian:bookworm-slim
+GLIBC_CEILING ?= 2.36
+so-docker:
+	mkdir -p $(BUILD_DIR)
+	docker run --rm -v "$(CURDIR)":/src -w /src -e HOST_UID=$(shell id -u) -e HOST_GID=$(shell id -g) $(C_BUILD_IMG) \
+		sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev libpam0g-dev make >/dev/null && make so-native; rc=$$?; chown -R "$$HOST_UID:$$HOST_GID" $(BUILD_DIR) 2>/dev/null; exit $$rc'
+
+check-glibc:
+	@max=$$(objdump -T $(SO) | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1); \
+	echo "highest glibc symbol version required: $$max (ceiling $(GLIBC_CEILING))"; \
+	test "$$(printf '%s\n%s\n' "$$max" "$(GLIBC_CEILING)" | sort -V | tail -1)" = "$(GLIBC_CEILING)"
 
 # Verifies that the three PAM entry points are exported (prints them).
 CHECK_SO_CMD = nm -D $(SO) | grep -E " T pam_sm_(authenticate|setcred|acct_mgmt)$$" | awk "{print} END {if (NR != 3) {print \"check-so: expected 3 pam_sm_* symbols, found \" NR; exit 1}}"

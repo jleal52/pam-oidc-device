@@ -29,7 +29,10 @@
  * Copyright 2026 Jorge Leal. Licensed under the Apache License, Version 2.0.
  */
 
-#define _GNU_SOURCE
+/* POSIX only: _GNU_SOURCE on glibc >= 2.38 redirects strtol to
+ * __isoc23_strtol, which makes the object refuse to load on older systems. */
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -212,6 +215,22 @@ static int handle_line(pam_handle_t *pamh, char *line, int *rc, int ackfd)
     }
 }
 
+/* pipe() with both ends close-on-exec (pipe2 needs _GNU_SOURCE). */
+static int make_pipe(int fd[2])
+{
+    if (pipe(fd) != 0)
+        return -1;
+    for (int i = 0; i < 2; i++) {
+        int fl = fcntl(fd[i], F_GETFD);
+        if (fl < 0 || fcntl(fd[i], F_SETFD, fl | FD_CLOEXEC) < 0) {
+            close(fd[0]);
+            close(fd[1]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static void close_inherited_fds(int keep)
 {
     long maxfd = sysconf(_SC_OPEN_MAX);
@@ -242,7 +261,7 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
 
     int pipefd[2];  /* helper stdout → module */
     int ackfd[2];   /* module → helper stdin (prompt acknowledgements) */
-    if (pipe2(pipefd, O_CLOEXEC) != 0 || pipe2(ackfd, O_CLOEXEC) != 0) {
+    if (make_pipe(pipefd) != 0 || make_pipe(ackfd) != 0) {
         pam_syslog(pamh, LOG_ERR, "pipe: %m");
         return PAM_AUTHINFO_UNAVAIL;
     }
