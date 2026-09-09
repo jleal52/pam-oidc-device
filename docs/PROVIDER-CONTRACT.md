@@ -106,7 +106,7 @@ Request body:
 | `publicKey` | yes | The host's Ed25519 public key, OpenSSH format. The provider MUST parse it strictly and reject any other key type. |
 | `name` | yes | Stable, human-readable host name; unique per provider. Shown to people approving logins. |
 | `hostname` | no | The machine's own hostname, informational only. |
-| `groups` | yes (may be empty) | Provider-defined host groups the host claims membership of; the provider MAY restrict which groups an enroller can assign. |
+| `groups` | yes (may be empty) | Provider-defined host groups the host claims membership of, in the same order as the `groups` parameter of the device authorization request that obtained the token (§6); the provider MAY restrict which groups an enroller can assign, and MAY refuse a body that does not match what was approved. |
 | `accounts` | yes | Local accounts the host will ask keys for. Requests for other accounts are refused (§4). |
 | `agentVersion` | no | Version of the client, informational only. |
 
@@ -211,6 +211,7 @@ optional. A provider that does not understand them MUST ignore them (RFC 6749
 | `host_assertion` | A host assertion (§2.2). Verified as in §2.3; an invalid one yields the standard `invalid_request` error. |
 | `account` | The local account the person is logging in to. |
 | `intent` | `login` (default) or `enroll`. |
+| `groups` | Only with `intent=enroll`: the host group codes the host is asking to join, comma-separated, in the order they will appear in the enrolment body. Omitted when the host claims none. |
 
 With a valid `host_assertion` the provider knows which enrolled host is
 asking and for which account. It SHOULD show the enrolled `name` of the host
@@ -223,6 +224,18 @@ local account to that group (`users: {systems: "ssh:systems"}`).
 With `intent=enroll` the provider MUST issue an access token usable at
 `{base}/hosts/enroll` (§3) only to people allowed to enrol hosts. A provider
 MAY require `host_assertion` for `intent=login` on managed hosts.
+
+`groups` exists because the host groups decide, from then on, who may log in
+to the machine, and the enrolment body that carries them (§3) is only sent
+*after* the approval: without the parameter the person approving would be
+authorising a claim they cannot see. A provider SHOULD therefore show the
+codes on the approval page. It is an **unsigned hint**, exactly like
+`device_name`: a host being enrolled has no identity the provider knows yet,
+so nothing about it is verified, and the page MUST present the codes as
+requested by the machine rather than as an established fact. A provider that
+takes the parameter into account SHOULD compare it with the `groups` of the
+enrolment body and refuse a mismatch; a host therefore MUST send both lists
+with the same codes in the same order.
 
 ## 7. Security considerations
 

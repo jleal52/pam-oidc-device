@@ -6,13 +6,17 @@
 # the module natively when the headers are present and inside Docker
 # otherwise; `go test ./...` never needs the headers.
 
-GO          ?= go
-GOFLAGS_BIN ?= -trimpath -buildvcs=false -ldflags='-s -w'
+GO             ?= go
+GOFLAGS_COMMON ?= -trimpath -buildvcs=false
+GOFLAGS_BIN    ?= $(GOFLAGS_COMMON) -ldflags='-s -w'
+# oidc-ssh additionally reports its version to the provider at enrolment.
+GOFLAGS_SSH    ?= $(GOFLAGS_COMMON) -ldflags='-s -w -X github.com/jleal52/pam-oidc-device/internal/sshcmd.Version=$(VERSION)'
 CC          ?= cc
 CFLAGS_SO   ?= -O2 -Wall -Wextra -Werror -fPIC -shared -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wl,-z,relro,-z,now
 BUILD_DIR   ?= build
 SO          ?= $(BUILD_DIR)/pam_oidc_device.so
 HELPER      ?= $(BUILD_DIR)/pam-oidc-device-helper
+OIDC_SSH    ?= $(BUILD_DIR)/oidc-ssh
 PAM_HEADER  ?= /usr/include/security/pam_modules.h
 DOCKER_IMG  ?= golang:1.26-bookworm
 GOMOD_CACHE ?= pam-oidc-device-gomod
@@ -32,7 +36,7 @@ docker run --rm \
 	$(DOCKER_IMG) sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends libpam0g-dev >/dev/null && $(1); rc=$$?; chown -R "$$HOST_UID:$$HOST_GID" $(BUILD_DIR) 2>/dev/null; exit $$rc'
 endef
 
-.PHONY: test lint vet so so-native so-docker check-glibc helper check-so package integration integration-sshd mock-provider clean
+.PHONY: test lint vet so so-native so-docker check-glibc helper oidc-ssh check-so package integration integration-sshd mock-provider clean
 
 test:
 	$(GO) test ./...
@@ -51,6 +55,11 @@ so-native:
 helper:
 	mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS_BIN) -o $(HELPER) ./cmd/pam-oidc-device-helper
+
+# Static oidc-ssh binary: enrolment, AuthorizedKeysCommand and status.
+oidc-ssh:
+	mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS_SSH) -o $(OIDC_SSH) ./cmd/oidc-ssh
 
 so:
 	@if [ -f $(PAM_HEADER) ]; then \
