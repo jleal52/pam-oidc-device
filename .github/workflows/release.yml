@@ -1,0 +1,98 @@
+# Release: builds the module for amd64 and arm64 on native runners, wraps it in
+# deb/rpm packages, produces an SBOM and signs every artifact with cosign
+# (keyless, via the GitHub Actions OIDC token). Verify a downloaded file with:
+#
+#   cosign verify-blob \
+#     --certificate <file>.pem --signature <file>.sig \
+#     --certificate-identity-regexp 'https://github.com/jleal52/pam-oidc-device/.github/workflows/release.yml@refs/tags/v.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     <file>
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+      - name: Install PAM headers
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libpam0g-dev
+      - name: Unit tests
+        run: go test ./... -count=1
+      - name: Build the module and check exported symbols
+        run: make so-native check-so
+      - name: Package (deb + rpm)
+        run: make package VERSION="${GITHUB_REF_NAME#v}" ARCH=${{ matrix.arch }}
+      - name: Stage artifacts
+        run: |
+          mkdir -p out
+          cp dist/* out/
+          cp build/pam_oidc_device.so "out/pam_oidc_device-linux-${{ matrix.arch }}.so"
+          ls -l out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: sign and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: SBOM
+        uses: anchore/sbom-action@f6c3d0fe42c3cf876e3462574e4c9416b5e0f07a # v0.9.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/pam-oidc-device-${{ github.ref_name }}.sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+      - name: Sign every artifact (keyless)
+        run: |
+          cd dist
+          for f in *; do
+            case "$f" in *.sig|*.pem) continue;; esac
+            cosign sign-blob --yes --output-signature "$f.sig" --output-certificate "$f.pem" "$f"
+          done
+          ls -l
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
