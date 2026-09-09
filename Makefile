@@ -116,7 +116,13 @@ docker run --rm \
 	$(NFPM_IMG) package -f packaging/nfpm.yaml -p $(1) -t $(DIST_DIR)/
 endef
 
-package: so helper
+# `so` is phony, so this rebuilds the module natively even when the caller
+# already produced it with so-docker. That is fine as long as the ceiling
+# still holds, which is why check-glibc runs HERE and not only before: the
+# release workflow checks the Debian-built artefact and then packages
+# whatever this rule leaves behind. Verifying the one that ships is the only
+# check that means anything.
+package: so helper oidc-ssh check-glibc
 	@test -n "$(MULTIARCH)" || { echo "package: unsupported ARCH=$(ARCH) (amd64 or arm64)" >&2; exit 1; }
 	@m="$$(od -An -tx1 -j18 -N2 $(SO) | tr -d ' \n')"; \
 	test "$$m" = "$(ELF_MACHINE_$(ARCH))" || { echo "package: $(SO) is not a $(ARCH) binary (ELF e_machine $$m)" >&2; exit 1; }

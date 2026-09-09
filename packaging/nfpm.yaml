@@ -23,6 +23,7 @@ license: Apache-2.0
 homepage: https://github.com/jleal52/pam-oidc-device
 
 scripts:
+  preinstall: packaging/preinstall.sh
   postinstall: packaging/postinstall.sh
 
 overrides:
@@ -43,6 +44,27 @@ overrides:
         dst: /usr/share/doc/pam-oidc-device/config.example.yaml
         file_info:
           mode: 0644
+      - src: build/oidc-ssh
+        dst: /usr/libexec/pam-oidc-device/oidc-ssh
+        file_info:
+          mode: 0755
+      # 2750, setgid: whatever `oidc-ssh enroll` writes here (host.key,
+      # config.yaml) inherits the group, so the AuthorizedKeysCommand user
+      # can read it. Without the setgid bit those files are created
+      # root:root and every key-based login fails with a permission error
+      # that points at nothing.
+      - dst: /etc/oidc-ssh
+        type: dir
+        file_info:
+          mode: 02750
+          owner: root
+          group: oidc-ssh
+      - dst: /var/cache/oidc-ssh
+        type: dir
+        file_info:
+          mode: 0700
+          owner: oidc-ssh
+          group: oidc-ssh
   rpm:
     depends:
       - pam
@@ -60,4 +82,25 @@ overrides:
         type: doc
         file_info:
           mode: 0644
+      - src: build/oidc-ssh
+        dst: /usr/libexec/pam-oidc-device/oidc-ssh
+        file_info:
+          mode: 0755
+      # 2750, setgid: whatever `oidc-ssh enroll` writes here (host.key,
+      # config.yaml) inherits the group, so the AuthorizedKeysCommand user
+      # can read it. Without the setgid bit those files are created
+      # root:root and every key-based login fails with a permission error
+      # that points at nothing.
+      - dst: /etc/oidc-ssh
+        type: dir
+        file_info:
+          mode: 02750
+          owner: root
+          group: oidc-ssh
+      - dst: /var/cache/oidc-ssh
+        type: dir
+        file_info:
+          mode: 0700
+          owner: oidc-ssh
+          group: oidc-ssh
 

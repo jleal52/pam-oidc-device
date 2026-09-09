@@ -21,9 +21,12 @@ cat <<MSG
 pam-oidc-device installed: $module
 
 1. Configuration (see the annotated example):
-     install -m 0644 /usr/share/doc/pam-oidc-device/config.example.yaml \\
-         /etc/security/pam_oidc_device.yaml
+     install -m 0640 -g oidc-ssh \\
+         /usr/share/doc/pam-oidc-device/config.example.yaml \\
+         /etc/oidc-ssh/config.yaml
    then set issuer, client_id and the users -> group mapping.
+   (/etc/security/pam_oidc_device.yaml is still read when the file above
+   does not exist, so an existing 0.1 install keeps working untouched.)
 
 2. PAM: add the module to the service that should use it, for example in
    /etc/pam.d/sshd before the other auth lines:
@@ -31,7 +34,7 @@ pam-oidc-device installed: $module
    (unmapped users fall through to the next module; "required" instead
    would deny them). The module needs no line in the account stack.
 
-3. sshd (/etc/ssh/sshd_config):
+3. sshd (/etc/ssh/sshd_config), device flow only:
      KbdInteractiveAuthentication yes
      Match User systems,ops
          AuthenticationMethods keyboard-interactive
@@ -41,7 +44,28 @@ pam-oidc-device installed: $module
      LoginGraceTime 400
    Then: sshd -t && systemctl reload sshd
 
-Audit lines go to syslog (authpriv) tagged pam_oidc_device.
+4. Optional: key-based login, which is far quicker than approving a
+   browser prompt on every connection. Enrol the host first:
+     oidc-ssh enroll --issuer https://idp.example.com --client-id ssh-pam \\
+         --name \$(hostname -s) --group servers --account systems
+   It prints a URL and a code; somebody allowed to enrol hosts approves
+   them, and the host identity is written to /etc/oidc-ssh. Then:
+     AuthorizedKeysCommand /usr/libexec/pam-oidc-device/oidc-ssh \\
+         authorized-keys %u %f
+     AuthorizedKeysCommandUser oidc-ssh
+     PermitUserEnvironment OIDC_USER,OIDC_SUB
+     Match User systems,ops
+         AuthenticationMethods publickey keyboard-interactive:pam
+         PubkeyAuthentication yes
+         AuthorizedKeysFile none
+   Mind the separator: a SPACE lists alternatives (a key is enough, and
+   without one you fall back to the device flow), while a COMMA requires
+   both, which is how you turn the browser approval into a second factor.
+   "oidc-ssh status" reports what the host knows and whether it reaches
+   the provider.
+
+Audit lines go to syslog (authpriv), tagged pam_oidc_device for the PAM
+module and oidc-ssh for the authorized-keys command.
 
 MSG
 exit 0
