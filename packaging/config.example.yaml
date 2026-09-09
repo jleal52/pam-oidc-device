@@ -47,8 +47,8 @@ device_name: "{{hostname}}"
 # ID token claim exported as the identity of the session. Default: "email".
 username_claim: email
 
-# ID token claim holding the list of groups (a JSON array of strings, or a
-# single string). Default: "groups".
+# ID token claim holding the list of groups (a JSON array of strings; a
+# missing claim means no groups). Default: "groups".
 groups_claim: groups
 
 # Environment variable that receives username_claim in the session. OIDC_SUB
