@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,6 +24,10 @@ const DefaultPath = "/etc/security/pam_oidc_device.yaml"
 
 // hostnamePlaceholder is replaced by the machine hostname inside device_name.
 const hostnamePlaceholder = "{{hostname}}"
+
+// sessionEnvPattern is the portable shape of an environment variable name
+// (POSIX.1-2017 §8.1). Anything else could break the PAM environment list.
+var sessionEnvPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Default values applied to fields that are absent from the YAML document.
 const (
@@ -45,7 +50,8 @@ var (
 	ErrNoUsers           = errors.New("users must map at least one local user to a group")
 	ErrEmptyUser         = errors.New("users contains an empty user name")
 	ErrEmptyGroup        = errors.New("users contains a user without a group")
-	ErrInvalidSessionEnv = errors.New("session_env must not be empty")
+	ErrDuplicateUser     = errors.New("users contains the same user more than once")
+	ErrInvalidSessionEnv = errors.New("session_env must be a valid environment variable name")
 	ErrInvalidScope      = errors.New("scope must not be empty")
 	ErrInvalidClaim      = errors.New("claim name must not be empty")
 	ErrInvalidDuration   = errors.New("invalid duration")
@@ -53,34 +59,41 @@ var (
 )
 
 // Config is the validated, ready-to-use module configuration.
+//
+// It is never decoded from YAML directly: decoding goes through rawConfig,
+// which is why the fields carry no yaml struct tags.
 type Config struct {
-	// Issuer is the OIDC issuer URL, without trailing slash. Discovery is
+	// Issuer is the OIDC issuer URL, kept exactly as configured (only
+	// surrounding whitespace is trimmed). It must match the provider's
+	// discovery "issuer" value byte for byte, trailing slash included, as
+	// the token "iss" claim is compared against it verbatim. Discovery is
 	// performed at <Issuer>/.well-known/openid-configuration.
-	Issuer string `yaml:"issuer"`
+	Issuer string
 	// ClientID is the public OAuth2 client registered for the device flow.
-	ClientID string `yaml:"client_id"`
+	ClientID string
 	// Scope is the space-separated scope list requested from the provider.
-	Scope string `yaml:"scope"`
+	Scope string
 	// DeviceName is shown to the user during the device flow prompt.
-	DeviceName string `yaml:"device_name"`
+	DeviceName string
 	// UsernameClaim is the id_token claim exported as the session user name.
-	UsernameClaim string `yaml:"username_claim"`
+	UsernameClaim string
 	// GroupsClaim is the id_token claim holding the list of user groups.
-	GroupsClaim string `yaml:"groups_claim"`
+	GroupsClaim string
 	// SessionEnv is the environment variable that receives UsernameClaim.
-	SessionEnv string `yaml:"session_env"`
+	SessionEnv string
 	// Timeout bounds the whole device flow (user interaction included).
-	Timeout time.Duration `yaml:"timeout"`
+	Timeout time.Duration
 	// ClockSkew is the tolerance applied when checking token timestamps.
-	ClockSkew time.Duration `yaml:"clock_skew"`
+	ClockSkew time.Duration
 	// HTTPTimeout bounds every single HTTP request to the provider.
-	HTTPTimeout time.Duration `yaml:"http_timeout"`
+	HTTPTimeout time.Duration
 	// AllowInsecureHTTP permits a plain http:// issuer. It exists only for
 	// tests against a local mock provider and is unsafe in production.
-	AllowInsecureHTTP bool `yaml:"allow_insecure_http"`
+	AllowInsecureHTTP bool
 	// Users maps a local account name to the group a user must hold in
-	// GroupsClaim to log in as that account.
-	Users map[string]string `yaml:"users"`
+	// GroupsClaim to log in as that account. Keys and values are
+	// whitespace-trimmed.
+	Users map[string]string
 }
 
 // rawConfig mirrors Config with string durations so that YAML values such as
@@ -101,9 +114,6 @@ type rawConfig struct {
 	Users             map[string]string `yaml:"users"`
 }
 
-// HostnameFunc returns the local hostname used to expand {{hostname}}.
-type HostnameFunc func() (string, error)
-
 // Load reads the YAML file at path and returns the validated configuration.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is the administrator-supplied config file
@@ -120,12 +130,12 @@ func Load(path string) (*Config, error) {
 // Parse decodes a YAML document, applies defaults, expands {{hostname}} with
 // os.Hostname and validates the result.
 func Parse(data []byte) (*Config, error) {
-	return ParseWithHostname(data, os.Hostname)
+	return parseWithHostname(data, os.Hostname)
 }
 
-// ParseWithHostname is Parse with an injectable hostname resolver. The
+// parseWithHostname is Parse with an injectable hostname resolver. The
 // resolver is only called when device_name contains {{hostname}}.
-func ParseWithHostname(data []byte, hostname HostnameFunc) (*Config, error) {
+func parseWithHostname(data []byte, hostname func() (string, error)) (*Config, error) {
 	raw, err := decode(data)
 	if err != nil {
 		return nil, err
@@ -200,7 +210,7 @@ func parseDuration(field string, raw *string, def time.Duration) (time.Duration,
 	return d, nil
 }
 
-func expandHostname(name string, hostname HostnameFunc) (string, error) {
+func expandHostname(name string, hostname func() (string, error)) (string, error) {
 	if !strings.Contains(name, hostnamePlaceholder) {
 		return name, nil
 	}
@@ -218,7 +228,6 @@ func (c *Config) validate() error {
 	if c.Issuer == "" {
 		return fmt.Errorf("config: %w", ErrMissingIssuer)
 	}
-	c.Issuer = strings.TrimRight(c.Issuer, "/")
 	if err := validateIssuer(c.Issuer, c.AllowInsecureHTTP); err != nil {
 		return err
 	}
@@ -234,8 +243,8 @@ func (c *Config) validate() error {
 	if c.GroupsClaim == "" {
 		return fmt.Errorf("config: groups_claim: %w", ErrInvalidClaim)
 	}
-	if c.SessionEnv == "" {
-		return fmt.Errorf("config: %w", ErrInvalidSessionEnv)
+	if !sessionEnvPattern.MatchString(c.SessionEnv) {
+		return fmt.Errorf("config: %w: %q", ErrInvalidSessionEnv, c.SessionEnv)
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("config: timeout: %w: must be positive, got %s", ErrInvalidDuration, c.Timeout)
@@ -246,18 +255,35 @@ func (c *Config) validate() error {
 	if c.ClockSkew < 0 {
 		return fmt.Errorf("config: clock_skew: %w: must not be negative, got %s", ErrInvalidDuration, c.ClockSkew)
 	}
-	if len(c.Users) == 0 {
-		return fmt.Errorf("config: %w", ErrNoUsers)
+	users, err := normaliseUsers(c.Users)
+	if err != nil {
+		return err
 	}
-	for user, group := range c.Users {
-		if strings.TrimSpace(user) == "" {
-			return fmt.Errorf("config: %w", ErrEmptyUser)
-		}
-		if strings.TrimSpace(group) == "" {
-			return fmt.Errorf("config: users: %q: %w", user, ErrEmptyGroup)
-		}
-	}
+	c.Users = users
 	return nil
+}
+
+// normaliseUsers returns a fresh map with whitespace-trimmed keys and values,
+// rejecting entries that are empty after trimming.
+func normaliseUsers(in map[string]string) (map[string]string, error) {
+	if len(in) == 0 {
+		return nil, fmt.Errorf("config: %w", ErrNoUsers)
+	}
+	out := make(map[string]string, len(in))
+	for user, group := range in {
+		user, group = strings.TrimSpace(user), strings.TrimSpace(group)
+		if user == "" {
+			return nil, fmt.Errorf("config: %w", ErrEmptyUser)
+		}
+		if group == "" {
+			return nil, fmt.Errorf("config: users: %q: %w", user, ErrEmptyGroup)
+		}
+		if _, dup := out[user]; dup {
+			return nil, fmt.Errorf("config: users: %q: %w", user, ErrDuplicateUser)
+		}
+		out[user] = group
+	}
+	return out, nil
 }
 
 func validateIssuer(issuer string, allowInsecure bool) error {
@@ -267,6 +293,18 @@ func validateIssuer(issuer string, allowInsecure bool) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("config: %w: %q", ErrInvalidIssuer, issuer)
+	}
+	// OpenID Connect Discovery 1.0 §3: the issuer has no query or fragment
+	// component; userinfo is rejected as well so credentials never end up
+	// in a discovery URL.
+	if u.RawQuery != "" || u.ForceQuery {
+		return fmt.Errorf("config: %w: %q must not contain a query component", ErrInvalidIssuer, issuer)
+	}
+	if strings.Contains(issuer, "#") {
+		return fmt.Errorf("config: %w: %q must not contain a fragment", ErrInvalidIssuer, issuer)
+	}
+	if u.User != nil {
+		return fmt.Errorf("config: %w: %q must not contain userinfo", ErrInvalidIssuer, issuer)
 	}
 	switch u.Scheme {
 	case "https":

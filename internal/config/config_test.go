@@ -21,7 +21,7 @@ func fixedHostname(name string) func() (string, error) {
 
 func mustParse(t *testing.T, data string) *Config {
 	t.Helper()
-	cfg, err := ParseWithHostname([]byte(data), fixedHostname("host01"))
+	cfg, err := parseWithHostname([]byte(data), fixedHostname("host01"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestParseDeviceNameHostname(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := ParseWithHostname([]byte(tt.yaml), tt.hostF)
+			cfg, err := parseWithHostname([]byte(tt.yaml), tt.hostF)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -148,12 +148,12 @@ func TestParseDeviceNameHostname(t *testing.T) {
 
 func TestParseHostnameFailure(t *testing.T) {
 	failing := func() (string, error) { return "", errors.New("boom") }
-	_, err := ParseWithHostname([]byte(minimalYAML), failing)
+	_, err := parseWithHostname([]byte(minimalYAML), failing)
 	if !errors.Is(err, ErrHostname) {
 		t.Fatalf("err = %v, want ErrHostname", err)
 	}
 	// Without the placeholder the hostname function must not matter.
-	cfg, err := ParseWithHostname([]byte(minimalYAML+"device_name: static\n"), failing)
+	cfg, err := parseWithHostname([]byte(minimalYAML+"device_name: static\n"), failing)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,9 +168,9 @@ func TestParseIssuerNormalisation(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"trailing slash stripped", "https://idp.example.com/", "https://idp.example.com"},
+		{"trailing slash preserved", "https://idp.example.com/", "https://idp.example.com/"},
 		{"whitespace trimmed", "  https://idp.example.com  ", "https://idp.example.com"},
-		{"path trailing slash stripped", "https://idp.example.com/realms/x/", "https://idp.example.com/realms/x"},
+		{"path trailing slash preserved", "https://idp.example.com/realms/x/", "https://idp.example.com/realms/x/"},
 		{"unchanged", "https://idp.example.com/realms/x", "https://idp.example.com/realms/x"},
 	}
 	for _, tt := range tests {
@@ -184,7 +184,7 @@ func TestParseIssuerNormalisation(t *testing.T) {
 }
 
 func TestParseInsecureHTTP(t *testing.T) {
-	_, err := ParseWithHostname([]byte("issuer: http://idp.local\nclient_id: c\nusers: {u: g}\n"), fixedHostname("h"))
+	_, err := parseWithHostname([]byte("issuer: http://idp.local\nclient_id: c\nusers: {u: g}\n"), fixedHostname("h"))
 	if !errors.Is(err, ErrInvalidIssuer) {
 		t.Fatalf("err = %v, want ErrInvalidIssuer", err)
 	}
@@ -207,6 +207,9 @@ func TestParseValidationErrors(t *testing.T) {
 		{"ftp issuer", "issuer: ftp://idp.example.com\nclient_id: c\nusers: {u: g}\n", ErrInvalidIssuer},
 		{"issuer without host", "issuer: 'https://'\nclient_id: c\nusers: {u: g}\n", ErrInvalidIssuer},
 		{"http issuer without insecure flag", "issuer: http://idp.example.com\nclient_id: c\nusers: {u: g}\n", ErrInvalidIssuer},
+		{"issuer with query", "issuer: 'https://idp.example.com/?tenant=x'\nclient_id: c\nusers: {u: g}\n", ErrInvalidIssuer},
+		{"issuer with fragment", "issuer: 'https://idp.example.com/realms/x#frag'\nclient_id: c\nusers: {u: g}\n", ErrInvalidIssuer},
+		{"issuer with userinfo", "issuer: 'https://user:pass@idp.example.com'\nclient_id: c\nusers: {u: g}\n", ErrInvalidIssuer},
 		{"missing client_id", "issuer: https://idp.example.com\nusers: {u: g}\n", ErrMissingClientID},
 		{"blank client_id", "issuer: https://idp.example.com\nclient_id: '  '\nusers: {u: g}\n", ErrMissingClientID},
 		{"missing users", "issuer: https://idp.example.com\nclient_id: c\n", ErrNoUsers},
@@ -214,7 +217,12 @@ func TestParseValidationErrors(t *testing.T) {
 		{"user with empty group", "issuer: https://idp.example.com\nclient_id: c\nusers: {ops: ''}\n", ErrEmptyGroup},
 		{"user with blank group", "issuer: https://idp.example.com\nclient_id: c\nusers: {ops: '  '}\n", ErrEmptyGroup},
 		{"empty user name", "issuer: https://idp.example.com\nclient_id: c\nusers: {'': g}\n", ErrEmptyUser},
+		{"blank user name", "issuer: https://idp.example.com\nclient_id: c\nusers: {'  ': g}\n", ErrEmptyUser},
+		{"users colliding after trim", "issuer: https://idp.example.com\nclient_id: c\nusers: {ops: a, ' ops ': b}\n", ErrDuplicateUser},
 		{"empty session_env", minimalYAML + "session_env: ''\n", ErrInvalidSessionEnv},
+		{"session_env with equals", minimalYAML + "session_env: A=B\n", ErrInvalidSessionEnv},
+		{"session_env starting with digit", minimalYAML + "session_env: 1X\n", ErrInvalidSessionEnv},
+		{"session_env with dash", minimalYAML + "session_env: OIDC-USER\n", ErrInvalidSessionEnv},
 		{"zero timeout", minimalYAML + "timeout: 0s\n", ErrInvalidDuration},
 		{"negative timeout", minimalYAML + "timeout: -1s\n", ErrInvalidDuration},
 		{"unparseable timeout", minimalYAML + "timeout: soon\n", ErrInvalidDuration},
@@ -231,7 +239,7 @@ func TestParseValidationErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := ParseWithHostname([]byte(tt.yaml), fixedHostname("h"))
+			cfg, err := parseWithHostname([]byte(tt.yaml), fixedHostname("h"))
 			if err == nil {
 				t.Fatalf("expected error, got config %+v", cfg)
 			}
@@ -240,6 +248,31 @@ func TestParseValidationErrors(t *testing.T) {
 			}
 			if cfg != nil {
 				t.Errorf("config must be nil on error, got %+v", cfg)
+			}
+		})
+	}
+}
+
+func TestParseUsersTrimmed(t *testing.T) {
+	cfg := mustParse(t, "issuer: https://idp.example.com\nclient_id: c\nusers: {' ops ': ' ssh:ops '}\n")
+	if len(cfg.Users) != 1 {
+		t.Fatalf("users = %v, want exactly one entry", cfg.Users)
+	}
+	group, ok := cfg.LookupUser("ops")
+	if !ok || group != "ssh:ops" {
+		t.Errorf("LookupUser(\"ops\") = (%q, %v), want (\"ssh:ops\", true)", group, ok)
+	}
+	if _, ok := cfg.LookupUser(" ops "); ok {
+		t.Errorf("untrimmed key must not be present in users")
+	}
+}
+
+func TestParseSessionEnvValidNames(t *testing.T) {
+	for _, name := range []string{"OIDC_USER", "_x", "a1", "SSO_USER_2"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := mustParse(t, minimalYAML+"session_env: "+name+"\n")
+			if cfg.SessionEnv != name {
+				t.Errorf("session_env = %q, want %q", cfg.SessionEnv, name)
 			}
 		})
 	}
@@ -343,7 +376,7 @@ func TestDefaultPath(t *testing.T) {
 }
 
 func TestErrorMessagesPrefixed(t *testing.T) {
-	_, err := ParseWithHostname([]byte("client_id: c\nusers: {u: g}\n"), fixedHostname("h"))
+	_, err := parseWithHostname([]byte("client_id: c\nusers: {u: g}\n"), fixedHostname("h"))
 	if err == nil {
 		t.Fatal("expected error")
 	}
