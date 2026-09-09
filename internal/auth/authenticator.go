@@ -27,8 +27,12 @@ type Code int
 
 // Outcomes of Authenticate.
 const (
+	// Unknown is the zero value and never a valid outcome. It exists so
+	// that a Result built without setting Code fails closed instead of
+	// reading as a Success; callers must treat it as a failure.
+	Unknown Code = iota
 	// Success means the user was authenticated and Result.Env is set.
-	Success Code = iota
+	Success
 	// Ignore means the local user is not managed by this module, so the
 	// PAM stack should fall through to the next module.
 	Ignore
@@ -43,6 +47,8 @@ const (
 // String returns a short, lower-case name suitable for logs.
 func (c Code) String() string {
 	switch c {
+	case Unknown:
+		return "unknown"
 	case Success:
 		return "success"
 	case Ignore:
@@ -76,6 +82,8 @@ const (
 	msgDenied              = "Login denied."
 	msgExpired             = "The code expired before approval; try again."
 	msgTimeout             = "No approval received in time."
+	// msgNotAllowed takes the local user name.
+	msgNotAllowed = "Not allowed to log in as %s on this host."
 )
 
 // EnvSubject is the environment variable that receives the token subject.
@@ -86,10 +94,13 @@ type Result struct {
 	// Code is the outcome to translate into a PAM return code.
 	Code Code
 	// Reason is a machine-readable cause, empty on Success. One of the
-	// Reason* constants.
+	// nine Reason* constants: not_mapped, provider_unavailable, denied,
+	// timeout, expired, no_id_token, invalid_token, missing_group and
+	// empty_username.
 	Reason string
 	// Username is the value of the configured username claim. Set once
-	// the ID token has been verified, on success and on missing_group.
+	// the ID token has been verified, on success and on the failures
+	// that follow verification (empty_username, missing_group).
 	Username string
 	// Subject is the token "sub" claim, set together with Username.
 	Subject string
@@ -147,9 +158,18 @@ func (a *Authenticator) Authenticate(ctx context.Context, localUser string) Resu
 	res := Result{Group: group}
 
 	da, err := a.flow.StartDeviceAuth(ctx, a.cfg.DeviceName)
+	if err == nil && da == nil {
+		err = errors.New("no device authorization response")
+	}
 	if err != nil {
 		a.info(msgProviderUnavailable)
 		return a.fail(res, AuthInfoUnavail, ReasonProviderUnavailable, fmt.Errorf("start device authorization: %w", err))
+	}
+	if a.expired(da) {
+		// The provider handed out a code that is already unusable; the
+		// URL and code would only mislead the user.
+		a.info(msgExpired)
+		return a.fail(res, AuthErr, ReasonExpired, fmt.Errorf("device code expired at %s before polling started: %w", da.Expiry.UTC().Format(time.RFC3339), oidc.ErrExpired))
 	}
 	a.showInstructions(da)
 
@@ -166,14 +186,16 @@ func (a *Authenticator) Authenticate(ctx context.Context, localUser string) Resu
 	if err != nil {
 		return a.fail(res, AuthErr, ReasonInvalidToken, fmt.Errorf("verify id_token: %w", err))
 	}
+	res.Username, res.Subject = id.Username, id.Subject
 	if id.Username == "" {
 		return a.fail(res, AuthErr, ReasonEmptyUsername,
 			fmt.Errorf("id_token for subject %q has no %q claim", id.Subject, a.cfg.UsernameClaim))
 	}
-	res.Username, res.Subject = id.Username, id.Subject
 
+	// Exact, case-sensitive match: a group name is an opaque identifier
+	// issued by the provider.
 	if !slices.Contains(id.Groups, group) {
-		a.info(fmt.Sprintf("Not allowed to log in as %s on this host.", localUser))
+		a.info(fmt.Sprintf(msgNotAllowed, localUser))
 		return a.fail(res, AuthErr, ReasonMissingGroup,
 			fmt.Errorf("user %q (subject %q) is not a member of group %q", id.Username, id.Subject, group))
 	}
@@ -197,6 +219,12 @@ func (a *Authenticator) showInstructions(da *oauth2.DeviceAuthResponse) {
 	a.info(msgOpenURL)
 	a.info("  " + uri)
 	a.info("Code: " + da.UserCode)
+}
+
+// expired reports whether the device code lifetime, when the provider
+// states one, has already run out.
+func (a *Authenticator) expired(da *oauth2.DeviceAuthResponse) bool {
+	return !da.Expiry.IsZero() && !da.Expiry.After(a.now())
 }
 
 // waitForToken polls for the token with a deadline bounded by the

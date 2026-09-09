@@ -342,6 +342,59 @@ func TestWaitErrorsAreMapped(t *testing.T) {
 	}
 }
 
+func TestExpiredDeviceCodeSkipsWait(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		expiry time.Time
+	}{
+		{"expired in the past", fixedNow.Add(-time.Second)},
+		{"expires exactly now", fixedNow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			flow := happyFlow()
+			flow.start = func(_ context.Context, _ string) (*oauth2.DeviceAuthResponse, error) {
+				da := deviceAuth()
+				da.Expiry = tc.expiry
+				return da, nil
+			}
+			prompt := &recordingPrompter{}
+			res := newAuthenticator(t, flow, prompt).Authenticate(context.Background(), "systems")
+
+			assertResult(t, res, auth.AuthErr, "expired")
+			if !errors.Is(res.Err, oidc.ErrExpired) {
+				t.Errorf("Err = %v, want wrapping %v", res.Err, oidc.ErrExpired)
+			}
+			// The URL and code are useless once expired: only the message.
+			assertLines(t, prompt.lines, []string{"The code expired before approval; try again."})
+			if flow.waitCalls != 0 || flow.verifyCalls != 0 {
+				t.Errorf("wait=%d verify=%d, want 0/0", flow.waitCalls, flow.verifyCalls)
+			}
+		})
+	}
+}
+
+func TestNilDeviceAuthIsProviderUnavailable(t *testing.T) {
+	t.Parallel()
+	flow := happyFlow()
+	flow.start = func(_ context.Context, _ string) (*oauth2.DeviceAuthResponse, error) {
+		return nil, nil // the contract violation under test
+	}
+	prompt := &recordingPrompter{}
+	res := newAuthenticator(t, flow, prompt).Authenticate(context.Background(), "systems")
+
+	assertResult(t, res, auth.AuthInfoUnavail, "provider_unavailable")
+	if res.Err == nil {
+		t.Error("Err = nil, want an error")
+	}
+	assertLines(t, prompt.lines, []string{"Identity provider unavailable, cannot continue."})
+	if flow.waitCalls != 0 || flow.verifyCalls != 0 {
+		t.Errorf("wait=%d verify=%d, want 0/0", flow.waitCalls, flow.verifyCalls)
+	}
+}
+
 // --- Rule 5: id_token extraction and verification ---
 
 func TestNoIDTokenIsAuthErr(t *testing.T) {
@@ -400,6 +453,9 @@ func TestEmptyUsernameIsAuthErr(t *testing.T) {
 	if res.Err == nil {
 		t.Error("Err = nil, want an error")
 	}
+	if res.Subject != "sub-123" || res.Username != "" {
+		t.Errorf("Subject/Username = %q/%q, want %q/%q for logging", res.Subject, res.Username, "sub-123", "")
+	}
 	assertLines(t, prompt.lines, expectedPromptLines)
 }
 
@@ -407,24 +463,45 @@ func TestEmptyUsernameIsAuthErr(t *testing.T) {
 
 func TestMissingGroupIsAuthErr(t *testing.T) {
 	t.Parallel()
-	flow := happyFlow()
-	flow.verify = func(_ context.Context, _, _, _ string, _ time.Duration) (*oidc.Identity, error) {
-		return identity("bob@example.com", "staff", "ssh:adminx"), nil
+	cases := []struct {
+		name   string
+		groups []string
+	}{
+		{"unrelated groups", []string{"staff", "ops"}},
+		{"nil groups", nil},
+		{"empty groups", []string{}},
+		// Matching is exact: near misses must be rejected.
+		{"longer name", []string{"ssh:adminx"}},
+		{"different case", []string{"SSH:ADMIN"}},
+		{"leading space", []string{" ssh:admin"}},
+		{"missing prefix", []string{"admin"}},
 	}
-	prompt := &recordingPrompter{}
-	res := newAuthenticator(t, flow, prompt).Authenticate(context.Background(), "systems")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			flow := happyFlow()
+			flow.verify = func(_ context.Context, _, _, _ string, _ time.Duration) (*oidc.Identity, error) {
+				return identity("bob@example.com", tc.groups...), nil
+			}
+			prompt := &recordingPrompter{}
+			res := newAuthenticator(t, flow, prompt).Authenticate(context.Background(), "systems")
 
-	assertResult(t, res, auth.AuthErr, "missing_group")
-	if res.Err == nil {
-		t.Error("Err = nil, want an error")
+			assertResult(t, res, auth.AuthErr, "missing_group")
+			if res.Err == nil {
+				t.Error("Err = nil, want an error")
+			}
+			if res.Env != nil {
+				t.Errorf("Env = %v, want nil", res.Env)
+			}
+			if res.Group != "ssh:admin" {
+				t.Errorf("Group = %q, want %q", res.Group, "ssh:admin")
+			}
+			if res.Username != "bob@example.com" || res.Subject != "sub-123" {
+				t.Errorf("Username/Subject = %q/%q, want identity values for logging", res.Username, res.Subject)
+			}
+			assertLines(t, prompt.lines, withPrompt("Not allowed to log in as systems on this host."))
+		})
 	}
-	if res.Group != "ssh:admin" {
-		t.Errorf("Group = %q, want %q", res.Group, "ssh:admin")
-	}
-	if res.Username != "bob@example.com" || res.Subject != "sub-123" {
-		t.Errorf("Username/Subject = %q/%q, want identity values for logging", res.Username, res.Subject)
-	}
-	assertLines(t, prompt.lines, withPrompt("Not allowed to log in as systems on this host."))
 }
 
 // --- Rule 8: success ---
@@ -487,6 +564,7 @@ func TestResultErrorNeverContainsTokens(t *testing.T) {
 func TestCodeString(t *testing.T) {
 	t.Parallel()
 	cases := map[auth.Code]string{
+		auth.Unknown:         "unknown",
 		auth.Success:         "success",
 		auth.Ignore:          "ignore",
 		auth.AuthErr:         "auth_err",
@@ -500,7 +578,18 @@ func TestCodeString(t *testing.T) {
 	}
 }
 
-func TestClientSatisfiesFlow(t *testing.T) {
+// A zero Result must never read as a successful login: any path that
+// forgets to set Code fails closed.
+func TestZeroResultIsNotSuccess(t *testing.T) {
 	t.Parallel()
-	var _ auth.Flow = (*oidc.Client)(nil)
+	var res auth.Result
+	if res.Code == auth.Success {
+		t.Error("Result{}.Code == Success, want fail-closed zero value")
+	}
+	if res.Code != auth.Unknown {
+		t.Errorf("Result{}.Code = %v, want Unknown", res.Code)
+	}
+	if got := auth.Code(0).String(); got != "unknown" {
+		t.Errorf("Code(0).String() = %q, want %q", got, "unknown")
+	}
 }
