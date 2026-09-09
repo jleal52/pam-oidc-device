@@ -1,0 +1,15 @@
+# Configuration used by the sshd integration test, at the default path
+# (/etc/oidc-ssh/config.yaml) so that both the PAM helper and oidc-ssh read
+# it. "oidc-ssh enroll" appends host_id and api_base to this file.
+#
+# allow_insecure_http exists for this mock only: never set it on a real host.
+issuer: http://127.0.0.1:8089
+client_id: test-client
+allow_insecure_http: true
+timeout: 30s
+identity_key: /etc/oidc-ssh/host.key
+cache_dir: /var/cache/oidc-ssh
+cache_ttl: 24h
+session_env: OIDC_USER
+users:
+  systems: "ssh:admin"

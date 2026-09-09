@@ -7,6 +7,11 @@
 // the pamtester integration test (test/integration), where the module runs
 // in a separate process and cannot use the in-memory provider directly.
 //
+// It also serves the SSH access API of docs/PROVIDER-CONTRACT.md, so the
+// sshd integration test can enrol a host and answer AuthorizedKeysCommand:
+// --ssh-keys programs the lines served for an account and --keys-outcome
+// turns the endpoint into a broken or unreachable one.
+//
 // Every request is echoed to stderr as "METHOD PATH" so the test can assert
 // which endpoints were hit. The issuer URL is printed to stdout once the
 // server is listening. The process blocks until SIGINT or SIGTERM.
@@ -39,6 +44,9 @@ func run(args []string) error {
 	username := fs.String("username", "alice@example.com", "value of the email claim in the ID token")
 	groups := fs.String("groups", "ssh:admin", "comma-separated values of the groups claim in the ID token")
 	sub := fs.String("sub", "user-1", "value of the sub claim in the ID token")
+	keysOutcome := fs.String("keys-outcome", "ok", "how the authorized-keys endpoint answers: ok, 500 or down")
+	var sshKeys sshKeysFlag
+	fs.Var(&sshKeys, "ssh-keys", "authorized_keys lines to serve for an account, as <account>=<file>; repeat for several")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -52,6 +60,16 @@ func run(args []string) error {
 	}
 	if *interval < 1 {
 		return fmt.Errorf("--interval must be at least 1, got %d", *interval)
+	}
+	ko, err := parseKeysOutcome(*keysOutcome)
+	if err != nil {
+		return err
+	}
+	// Read the key files before the server exists, so a typo in a path is
+	// a startup error rather than a login that mysteriously finds no keys.
+	lines, err := sshKeys.read()
+	if err != nil {
+		return err
 	}
 
 	p, err := testprovider.New(
@@ -70,6 +88,11 @@ func run(args []string) error {
 		return err
 	}
 	defer p.Close()
+
+	for _, account := range sshKeys.accounts {
+		p.SetAuthorizedKeys(account, lines[account])
+	}
+	p.SetKeysOutcome(ko)
 
 	fmt.Println(p.Issuer())
 
@@ -90,6 +113,73 @@ func parseOutcome(s string) (testprovider.Outcome, error) {
 	default:
 		return 0, fmt.Errorf("unknown --outcome %q: want approved, denied or expired", s)
 	}
+}
+
+func parseKeysOutcome(s string) (testprovider.KeysOutcome, error) {
+	switch s {
+	case "ok":
+		return testprovider.KeysOK, nil
+	case "500":
+		return testprovider.KeysServerError, nil
+	case "down":
+		return testprovider.KeysTimeout, nil
+	default:
+		return 0, fmt.Errorf("unknown --keys-outcome %q: want ok, 500 or down", s)
+	}
+}
+
+// sshKeysFlag collects the repeated --ssh-keys <account>=<file> pairs. The
+// order they were given in is kept so that reading them back is stable.
+type sshKeysFlag struct {
+	accounts []string
+	files    map[string]string
+}
+
+func (f *sshKeysFlag) String() string {
+	pairs := make([]string, 0, len(f.accounts))
+	for _, a := range f.accounts {
+		pairs = append(pairs, a+"="+f.files[a])
+	}
+	return strings.Join(pairs, ",")
+}
+
+func (f *sshKeysFlag) Set(v string) error {
+	account, file, ok := strings.Cut(v, "=")
+	account, file = strings.TrimSpace(account), strings.TrimSpace(file)
+	if !ok || account == "" || file == "" {
+		return fmt.Errorf("want <account>=<file>, got %q", v)
+	}
+	if f.files == nil {
+		f.files = map[string]string{}
+	} else if _, dup := f.files[account]; dup {
+		return fmt.Errorf("account %q given twice", account)
+	}
+	f.files[account] = file
+	f.accounts = append(f.accounts, account)
+	return nil
+}
+
+// read loads every file, returning the lines to serve per account. Blank
+// lines and comments are dropped; everything else is served verbatim, so a
+// test can hand the provider a line the client is expected to reject.
+func (f *sshKeysFlag) read() (map[string][]string, error) {
+	out := make(map[string][]string, len(f.accounts))
+	for _, account := range f.accounts {
+		path := f.files[account]
+		data, err := os.ReadFile(path) //nolint:gosec // the path comes from this test tool's own command line.
+		if err != nil {
+			return nil, fmt.Errorf("--ssh-keys %s: %w", account, err)
+		}
+		lines := make([]string, 0, 4)
+		for _, l := range strings.Split(string(data), "\n") {
+			if l = strings.TrimRight(l, "\r"); strings.TrimSpace(l) == "" || strings.HasPrefix(strings.TrimSpace(l), "#") {
+				continue
+			}
+			lines = append(lines, l)
+		}
+		out[account] = lines
+	}
+	return out, nil
 }
 
 // splitGroups turns "a,b, c" into ["a","b","c"], dropping empty entries so

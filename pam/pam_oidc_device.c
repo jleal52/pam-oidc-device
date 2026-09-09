@@ -55,6 +55,10 @@
 #define DEFAULT_TIMEOUT 420
 #define MAX_LINE        8192
 #define MAX_INFO        4096
+/* How long to let the helper finish exiting after it has sent its result
+ * line, and how often to look while waiting. See reap_helper. */
+#define EXIT_GRACE_MS   2000
+#define EXIT_POLL_NS    (2L * 1000 * 1000)
 
 struct opts {
     const char *config;
@@ -163,6 +167,28 @@ static long now_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+/* Reaps the helper, giving it up to grace_ms to exit on its own. Returns 1
+ * when there is nothing left to wait for (it was reaped, or waitpid says it
+ * is not ours), 0 when it is still running.
+ *
+ * The grace period is not politeness. The helper writes its result line and
+ * only then flushes, unwinds and exits, so a WNOHANG the instant that line
+ * arrives nearly always finds it alive; killing it there and reading the
+ * signal out of the status would discard a successful authentication as an
+ * abnormal exit. With grace_ms == 0 this is exactly one WNOHANG call. */
+static int reap_helper(pid_t pid, int *status, long grace_ms)
+{
+    long deadline = now_ms() + grace_ms;
+    for (;;) {
+        if (waitpid(pid, status, WNOHANG) != 0)
+            return 1;
+        if (now_ms() >= deadline)
+            return 0;
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = EXIT_POLL_NS };
+        nanosleep(&ts, NULL);
+    }
 }
 
 /* Handles one protocol line. Returns 1 when the final result was received
@@ -367,9 +393,13 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
     close(pipefd[0]);
     close(ackfd[1]);
     int status = 0;
-    if (waitpid(pid, &status, WNOHANG) == 0) {
+    /* A helper that has delivered its result is on its way out and gets a
+     * moment to get there; one that never did is stuck and is killed at
+     * once, the wall-clock deadline having already passed. */
+    if (!reap_helper(pid, &status, done ? EXIT_GRACE_MS : 0)) {
         kill(pid, SIGKILL);
-        waitpid(pid, &status, 0);
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+            ;
     }
     if (done && rc == PAM_SUCCESS && (!WIFEXITED(status) || WEXITSTATUS(status) != 0)) {
         /* A success line followed by an abnormal exit is not trusted. */

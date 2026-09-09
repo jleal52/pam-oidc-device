@@ -1,3 +1,12 @@
+# The sshd configuration under test: what "oidc-ssh enroll" suggests, plus
+# the port and address a container needs.
+#
+# AuthenticationMethods takes alternatives separated by spaces, and every
+# method inside one alternative must succeed. "publickey
+# keyboard-interactive:pam" therefore means "a key the provider vouches for
+# is enough, and a login without one falls back to the device flow", which
+# is what the scenarios exercise. Joining the two with a comma would demand
+# both, which is the two-factor variant of the same block.
 Port 2222
 ListenAddress 127.0.0.1
 UsePAM yes
@@ -7,6 +16,13 @@ PermitRootLogin no
 LoginGraceTime 60
 LogLevel DEBUG1
 
-Match User systems
-    AuthenticationMethods keyboard-interactive:pam
-    PubkeyAuthentication no
+AuthorizedKeysCommand /usr/libexec/pam-oidc-device/oidc-ssh authorized-keys %u %f
+AuthorizedKeysCommandUser oidc-ssh
+# Only these two may come from an authorized_keys "environment=" option. The
+# provider is a remote party: anything else it sends, sshd must drop.
+PermitUserEnvironment OIDC_USER,OIDC_SUB
+
+Match User systems,ops
+    AuthenticationMethods publickey keyboard-interactive:pam
+    PubkeyAuthentication yes
+    AuthorizedKeysFile none

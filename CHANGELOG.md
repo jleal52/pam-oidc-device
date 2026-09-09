@@ -24,6 +24,20 @@ All notable changes to this project are documented here. The format follows
   by the PAM helper and `oidc-ssh`. `config.LoadDefault` still reads
   `/etc/security/pam_oidc_device.yaml` when the new path does not exist, so
   existing installations keep working unchanged.
+- The `sshd_config` block printed at the end of an enrolment now separates
+  `publickey` and `keyboard-interactive:pam` with a space, not a comma:
+  space-separated alternatives mean "a key is enough, and a login without
+  one falls back to the device flow", while the comma demands both.
+
+### Fixed
+
+- A successful authentication could be reported to PAM as
+  `PAM_AUTHINFO_UNAVAIL` ("helper reported success but exited abnormally").
+  The module reaped the helper with `WNOHANG` the instant its result line
+  arrived, which normally finds it still unwinding, and killed it; the
+  signal in the exit status then invalidated the result. The helper now gets
+  a bounded grace period to exit on its own. Caught by the sshd integration
+  test, where it failed roughly four logins in five.
 
 ## [0.1.1] - 2026-09-09
 

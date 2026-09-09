@@ -134,10 +134,12 @@ integration: so helper mock-provider
 	docker build -q -f test/integration/Dockerfile -t $(IT_IMG) .
 	docker run --rm $(IT_IMG)
 
-# Same scenarios through a real OpenSSH server (privilege separation, fork
-# model) and the OpenSSH client with keyboard-interactive only.
+# Everything that only a real OpenSSH server can exercise: the device flow
+# through its fork model, host enrolment, AuthorizedKeysCommand, the
+# last-known-good cache when the provider is broken, and the key options
+# sshd is allowed to apply.
 IT_SSHD_IMG ?= pam-oidc-device-sshd
-integration-sshd: so helper mock-provider
+integration-sshd: so helper oidc-ssh mock-provider
 	docker build -q -f test/integration/Dockerfile.sshd -t $(IT_SSHD_IMG) .
 	docker run --rm $(IT_SSHD_IMG)
 

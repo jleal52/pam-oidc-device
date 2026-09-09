@@ -1,13 +1,19 @@
 # sshd integration image: a real OpenSSH server (privilege separation, fork
-# model) with the module installed, authenticating `systems` through the
-# device flow against the mock provider. Build from the repository root:
+# model) with the module and oidc-ssh installed, authenticating `systems`
+# and `ops` against the mock provider — through the device flow and through
+# AuthorizedKeysCommand. Build from the repository root:
 #   docker build -f test/integration/Dockerfile.sshd -t pam-oidc-device-sshd .
 FROM debian:bookworm-slim
 
+# busybox provides the syslogd the audit assertions read: oidc-ssh writes its
+# authorized-keys line to authpriv and has, by design, no other channel.
 RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends libpam0g openssh-server openssh-client sshpass sudo ca-certificates \
+    && apt-get install -y -qq --no-install-recommends \
+        libpam0g openssh-server openssh-client sshpass sudo busybox ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -s /bin/bash systems && passwd -l systems \
+    && useradd -m -s /bin/bash ops && passwd -l ops \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin oidc-ssh \
     && mkdir -p /run/sshd \
     && ssh-keygen -A
 
@@ -16,13 +22,24 @@ RUN dir="$(dirname "$(find /usr/lib -name pam_permit.so -print -quit)")" \
     && install -m 0644 /tmp/pam_oidc_device.so "$dir/pam_oidc_device.so" \
     && rm /tmp/pam_oidc_device.so
 
-COPY test/integration/config.yaml   /etc/security/pam_oidc_device.yaml
 COPY build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
-COPY build/mock-provider            /usr/local/bin/mock-provider
+COPY build/oidc-ssh               /usr/libexec/pam-oidc-device/oidc-ssh
+COPY build/mock-provider          /usr/local/bin/mock-provider
 COPY test/integration/sshd/pam.d-sshd    /etc/pam.d/sshd
 COPY test/integration/sshd/sshd_config   /etc/ssh/sshd_config.d/oidc.conf
 COPY test/integration/sshd/sudoers-oidc  /etc/sudoers.d/oidc
 COPY test/integration/sshd/run.sh        /run-sshd.sh
 RUN chmod 0440 /etc/sudoers.d/oidc && visudo -cf /etc/sudoers.d/oidc
+
+# The layout a packaged host is expected to have: root owns everything the
+# login path reads, and the AuthorizedKeysCommand user may only read it. The
+# setgid bit on /etc/oidc-ssh is what gives that group to the files
+# enrolment creates there (the host key) and to the ones it rewrites (the
+# configuration, replaced through a temporary file in the same directory).
+COPY test/integration/sshd/config.yaml /tmp/config.yaml
+RUN install -d -m 2750 -o root -g oidc-ssh /etc/oidc-ssh \
+    && install -m 0640 -o root -g oidc-ssh /tmp/config.yaml /etc/oidc-ssh/config.yaml \
+    && rm /tmp/config.yaml \
+    && install -d -m 0700 -o oidc-ssh -g oidc-ssh /var/cache/oidc-ssh
 
 ENTRYPOINT ["/run-sshd.sh"]

@@ -321,7 +321,11 @@ func sshdConfig(env *Env, cfg *config.Config, accounts []string) string {
 	fmt.Fprintf(&b, "LoginGraceTime %d\n", grace)
 	if len(accounts) > 0 {
 		fmt.Fprintf(&b, "\nMatch User %s\n", strings.Join(accounts, ","))
-		b.WriteString("    AuthenticationMethods publickey,keyboard-interactive:pam\n")
+		// Space-separated alternatives: a key the provider vouches for is
+		// enough on its own, and a login without one falls back to the
+		// device flow. Joining the two with a comma would demand both,
+		// which is the two-factor variant of the same line.
+		b.WriteString("    AuthenticationMethods publickey keyboard-interactive:pam\n")
 		b.WriteString("    PubkeyAuthentication yes\n")
 		b.WriteString("    AuthorizedKeysFile none\n")
 	}
