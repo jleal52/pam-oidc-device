@@ -3,9 +3,11 @@
  *
  * Everything that needs a C struct layout (the conversation) or a C macro
  * (PAM_RHOST, PAM_CONV, PAM_TEXT_INFO) lives here so that the Go side only
- * ever calls plain functions. All helpers are static inline: there is no
- * separate translation unit and no symbol other than pam_sm_* leaves the
- * shared object.
+ * ever calls plain functions. All helpers are static inline, so there is no
+ * separate translation unit and none of them is exported. The shared object
+ * still exports the Go runtime and cgo symbols that -buildmode=c-shared
+ * needs; libpam loads modules with RTLD_LOCAL, so they are not visible to
+ * other modules or to the application.
  */
 #ifndef PAM_OIDC_DEVICE_SHIM_H
 #define PAM_OIDC_DEVICE_SHIM_H

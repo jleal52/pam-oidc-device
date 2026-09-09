@@ -154,3 +154,69 @@ func TestLevelString(t *testing.T) {
 		}
 	}
 }
+
+func TestValidEnvValue(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"empty", "", true},
+		{"email", "alice@example.com", true},
+		{"subject", "auth0|5f1e2d3c4b5a69788796a5b4", true},
+		{"unicode", "josé.müller", true},
+		{"space allowed", "Alice Example", true},
+		{"newline", "alice\nresult=success", false},
+		{"carriage return", "alice\r", false},
+		{"escape", "alice\x1b[31m", false},
+		{"nul", "alice\x00root", false},
+		{"tab", "a\tb", false},
+		{"delete", "a\x7fb", false},
+		{"c1 control", "a\u0085b", false},
+		{"invalid utf-8", "a\xffb", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pamlog.ValidEnvValue(tc.in); got != tc.want {
+				t.Fatalf("ValidEnvValue(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizePrompt(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "Open the following URL", "Open the following URL"},
+		{"empty", "", ""},
+		{"keeps newline and tab", "line1\n\tline2\n", "line1\n\tline2\n"},
+		{"strips escape sequence", "https://example.com/\x1b[2J\x1b[Hverify", "https://example.com/[2J[Hverify"},
+		{"strips carriage return", "Code: ABCD\rXXXX", "Code: ABCDXXXX"},
+		{"strips nul and delete", "a\x00b\x7fc", "abc"},
+		{"strips c1 controls", "ab\u0085c", "abc"},
+		{"drops invalid utf-8", "a\xffb", "ab"},
+		{"unicode kept", "josé.müller → ok", "josé.müller → ok"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pamlog.SanitizePrompt(tc.in); got != tc.want {
+				t.Fatalf("SanitizePrompt(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizePromptAgreesWithValidEnvValue(t *testing.T) {
+	// Whatever SanitizePrompt lets through must be either \n, \t or a
+	// character ValidEnvValue would also accept: the two helpers share one
+	// notion of "control character".
+	in := "a\x00b\x1bc\rd\ne\tf\x7fg\xffhi"
+	out := pamlog.SanitizePrompt(in)
+	stripped := strings.NewReplacer("\n", "", "\t", "").Replace(out)
+	if !pamlog.ValidEnvValue(stripped) {
+		t.Fatalf("SanitizePrompt(%q) = %q, which ValidEnvValue rejects after removing \\n and \\t", in, out)
+	}
+}

@@ -10,6 +10,7 @@ package pamlog
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Limits applied to values by Attempt.Line.
@@ -153,4 +154,36 @@ func Sanitize(s string, limit int) string {
 		}
 	}
 	return out
+}
+
+// ValidEnvValue reports whether s is safe to export as the value of a PAM
+// environment variable: valid UTF-8 without control characters. NUL would
+// truncate the C string, a newline or an escape sequence would let a hostile
+// provider forge lines or terminal output in whatever reads the session
+// environment later.
+func ValidEnvValue(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// SanitizePrompt makes a message safe to show through the PAM conversation:
+// control characters other than '\n' and '\t' are removed (so a verification
+// URL or error text from the provider cannot inject terminal escapes into
+// login or su) and invalid UTF-8 is dropped.
+func SanitizePrompt(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToValidUTF8(s, "") {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

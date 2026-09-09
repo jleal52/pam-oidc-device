@@ -136,6 +136,17 @@ expect_absent "$scenario" "$WORK/mock.err" "POST /device_authorization"
 stop_mock
 echo "PASS $scenario"
 
+# (f) account stack with only this module: pam_sm_acct_mgmt returns
+# PAM_IGNORE, so there is no verdict and pam_acct_mgmt must fail. The
+# provider is never involved in the account phase.
+scenario=acct-mgmt-ignore
+set +e
+pamtester oidc-test-acct systems acct_mgmt >"$WORK/out" 2>"$WORK/err"
+RC=$?
+set -e
+[[ $RC -ne 0 ]] || fail "$scenario: exit 0, want failure (no verdict)" "$WORK/out" "$WORK/err"
+echo "PASS $scenario"
+
 # (e) provider down: nothing listens on the issuer port
 scenario=provider-down
 port_is_free || fail "$scenario: port $PORT still busy"

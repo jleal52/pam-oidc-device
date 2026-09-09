@@ -8,7 +8,7 @@
 # the cgo package (they need the headers, so they also fall back to Docker).
 
 GO          ?= go
-GOFLAGS_SO  ?= -trimpath -ldflags='-s -w'
+GOFLAGS_SO  ?= -trimpath -buildvcs=false -ldflags='-s -w'
 PAM_TAGS    ?= pam
 BUILD_DIR   ?= build
 SO          ?= $(BUILD_DIR)/pam_oidc_device.so

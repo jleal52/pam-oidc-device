@@ -5,7 +5,9 @@
 // It is built with -buildmode=c-shared (make so, which passes -tags pam:
 // the package needs libpam headers, so it is opt-in and stays out of plain
 // go build/test/vet runs) and exports pam_sm_authenticate,
-// pam_sm_setcred and pam_sm_acct_mgmt. The module is deliberately thin: it
+// pam_sm_setcred and pam_sm_acct_mgmt. Only the first does any work:
+// setcred succeeds without effect and acct_mgmt returns PAM_IGNORE, so the
+// module has no opinion in the account stack. The module is deliberately thin: it
 // reads the module arguments, resolves the PAM user, loads the
 // configuration, runs the device flow through internal/auth and translates
 // the outcome into a PAM return code, a PAM environment and one syslog line.
@@ -51,8 +53,13 @@ const (
 	reasonNoUser = "no_user"
 	reasonConfig = "config"
 	reasonPutenv = "putenv"
+	reasonEnv    = "invalid_env"
 	reasonPanic  = "panic"
 )
+
+// errInvalidEnv marks an exportEnv failure caused by the value itself rather
+// than by pam_putenv.
+var errInvalidEnv = errors.New("invalid environment value")
 
 // main is required by -buildmode=c-shared and never runs.
 func main() {}
@@ -61,11 +68,13 @@ func main() {}
 type options struct {
 	configPath string
 	debug      bool
-	unknown    []string
+	// ignored holds the arguments that had no effect: unknown ones and an
+	// empty "config=", which keeps the default path.
+	ignored []string
 }
 
-// parseArgs reads argv[0..argc). Unknown arguments are collected so they can
-// be logged once instead of silently ignored.
+// parseArgs reads argv[0..argc). Arguments that have no effect are collected
+// so they can be logged once instead of silently ignored.
 func parseArgs(argc C.int, argv *C.pam_argv_t) options {
 	o := options{configPath: config.DefaultPath}
 	if argc <= 0 || argv == nil {
@@ -82,9 +91,11 @@ func parseArgs(argc C.int, argv *C.pam_argv_t) options {
 		case strings.HasPrefix(s, "config="):
 			if v := strings.TrimPrefix(s, "config="); v != "" {
 				o.configPath = v
+			} else {
+				o.ignored = append(o.ignored, s)
 			}
 		default:
-			o.unknown = append(o.unknown, s)
+			o.ignored = append(o.ignored, s)
 		}
 	}
 	return o
@@ -156,10 +167,14 @@ type prompter struct {
 	lg   *logger
 }
 
-// Info implements auth.Prompter. A failing conversation is reported to the
-// caller, which ignores it by contract, and to the debug log.
+// Info implements auth.Prompter. The message is stripped of control
+// characters (newlines and tabs excepted) before it reaches the terminal:
+// the verification URL comes from the provider, and a hostile one must not
+// be able to inject escape sequences into login or su. A failing
+// conversation is reported to the caller, which ignores it by contract, and
+// to the debug log.
 func (p *prompter) Info(msg string) error {
-	cmsg := C.CString(msg)
+	cmsg := C.CString(pamlog.SanitizePrompt(msg))
 	defer C.free(unsafe.Pointer(cmsg))
 	if rc := C.shim_info(p.pamh, cmsg); rc != C.PAM_SUCCESS {
 		p.lg.debugf("conversation failed with PAM code %d", int(rc))
@@ -172,18 +187,24 @@ func (p *prompter) Info(msg string) error {
 func pam_sm_authenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv *C.pam_argv_t) (rc C.int) {
 	_ = flags
 	var lg *logger
-	// A Go panic must never unwind into sshd: recover, log and deny.
+	// A Go panic must never unwind into sshd: recover, log and deny. The
+	// return code is set before logging, and the logging itself runs under
+	// its own recover, so a second panic (a broken logger, a %v that panics
+	// on r) cannot cross into C either.
 	defer func() {
 		if r := recover(); r != nil {
-			if lg == nil {
-				lg = newLogger(false)
-			}
-			lg.attempt(pamlog.Attempt{
-				Result: pamlog.ResultError,
-				Reason: reasonPanic,
-				Err:    fmt.Errorf("panic: %v", r),
-			})
 			rc = C.PAM_AUTHINFO_UNAVAIL
+			func() {
+				defer func() { _ = recover() }()
+				if lg == nil {
+					lg = newLogger(false)
+				}
+				lg.attempt(pamlog.Attempt{
+					Result: pamlog.ResultError,
+					Reason: reasonPanic,
+					Err:    fmt.Errorf("panic: %v", r),
+				})
+			}()
 		}
 		if lg != nil {
 			lg.close()
@@ -192,9 +213,9 @@ func pam_sm_authenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv *C.
 
 	opts := parseArgs(argc, argv)
 	lg = newLogger(opts.debug)
-	if len(opts.unknown) > 0 {
-		lg.log(pamlog.LevelNotice, "ignoring unknown module arguments: "+
-			pamlog.Sanitize(strings.Join(opts.unknown, ","), pamlog.MaxValueLen))
+	if len(opts.ignored) > 0 {
+		lg.log(pamlog.LevelNotice, "ignoring unknown or empty module arguments: "+
+			pamlog.Sanitize(strings.Join(opts.ignored, ","), pamlog.MaxValueLen))
 	}
 	return authenticate(pamh, opts, lg)
 }
@@ -271,6 +292,13 @@ func authenticate(pamh *C.pam_handle_t, opts options, lg *logger) C.int {
 	if code == pammap.PAMSuccess {
 		if err := exportEnv(pamh, res.Env); err != nil {
 			// Never grant a session whose identity variables are missing.
+			// A value the provider crafted is an authentication failure; a
+			// libpam failure is an unavailable service.
+			if errors.Is(err, errInvalidEnv) {
+				attempt.Result, attempt.Reason, attempt.Err = pamlog.ResultDenied, reasonEnv, err
+				lg.attempt(attempt)
+				return C.PAM_AUTH_ERR
+			}
 			attempt.Result, attempt.Reason, attempt.Err = pamlog.ResultError, reasonPutenv, err
 			lg.attempt(attempt)
 			return C.PAM_AUTHINFO_UNAVAIL
@@ -280,7 +308,10 @@ func authenticate(pamh *C.pam_handle_t, opts options, lg *logger) C.int {
 	return C.int(code)
 }
 
-// exportEnv publishes env into the PAM environment in a stable order.
+// exportEnv publishes env into the PAM environment in a stable order. Names
+// were validated by the configuration (or are constants); values come from
+// token claims, so anything that is not clean UTF-8 text is rejected with
+// errInvalidEnv before it can reach pam_putenv.
 func exportEnv(pamh *C.pam_handle_t, env map[string]string) error {
 	names := make([]string, 0, len(env))
 	for name := range env {
@@ -289,8 +320,11 @@ func exportEnv(pamh *C.pam_handle_t, env map[string]string) error {
 	sort.Strings(names)
 	for _, name := range names {
 		value := env[name]
-		if strings.ContainsRune(name, 0) || strings.ContainsRune(value, 0) {
-			return fmt.Errorf("environment variable %q contains a NUL byte", name)
+		if !pamlog.ValidEnvValue(name) || strings.ContainsAny(name, "=") {
+			return fmt.Errorf("%w: variable name %q", errInvalidEnv, pamlog.Sanitize(name, pamlog.MaxValueLen))
+		}
+		if !pamlog.ValidEnvValue(value) {
+			return fmt.Errorf("%w: %s contains control characters or invalid UTF-8", errInvalidEnv, name)
 		}
 		kv := C.CString(name + "=" + value)
 		rc := C.shim_putenv(pamh, kv)
@@ -302,14 +336,22 @@ func exportEnv(pamh *C.pam_handle_t, env map[string]string) error {
 	return nil
 }
 
+// pam_sm_setcred has no credentials to establish or delete; the session
+// variables are published by pam_sm_authenticate through pam_putenv.
+//
 //export pam_sm_setcred
 func pam_sm_setcred(pamh *C.pam_handle_t, flags C.int, argc C.int, argv *C.pam_argv_t) C.int {
 	_, _, _, _ = pamh, flags, argc, argv
 	return C.PAM_SUCCESS
 }
 
+// pam_sm_acct_mgmt contributes nothing to the account stack: authorisation
+// (the group check) happens in pam_sm_authenticate. It returns PAM_IGNORE
+// rather than PAM_SUCCESS so that an "account required pam_oidc_device.so"
+// line cannot pass every user by itself.
+//
 //export pam_sm_acct_mgmt
 func pam_sm_acct_mgmt(pamh *C.pam_handle_t, flags C.int, argc C.int, argv *C.pam_argv_t) C.int {
 	_, _, _, _ = pamh, flags, argc, argv
-	return C.PAM_SUCCESS
+	return C.PAM_IGNORE
 }
