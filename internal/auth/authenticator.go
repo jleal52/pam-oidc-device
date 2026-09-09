@@ -75,13 +75,17 @@ const (
 	ReasonEmptyUsername       = "empty_username"
 )
 
+// MsgProviderUnavailable is shown when the provider cannot be reached. It
+// is exported because the PAM layer performs discovery before this package
+// runs and must tell the user the same thing when that step fails.
+const MsgProviderUnavailable = "Identity provider unavailable, cannot continue."
+
 // Messages shown to the user through the Prompter.
 const (
-	msgProviderUnavailable = "Identity provider unavailable, cannot continue."
-	msgOpenURL             = "Open the following URL in a browser and approve this login:"
-	msgDenied              = "Login denied."
-	msgExpired             = "The code expired before approval; try again."
-	msgTimeout             = "No approval received in time."
+	msgOpenURL = "Open the following URL in a browser and approve this login:"
+	msgDenied  = "Login denied."
+	msgExpired = "The code expired before approval; try again."
+	msgTimeout = "No approval received in time."
 	// msgNotAllowed takes the local user name.
 	msgNotAllowed = "Not allowed to log in as %s on this host."
 )
@@ -162,7 +166,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, localUser string) Resu
 		err = errors.New("no device authorization response")
 	}
 	if err != nil {
-		a.info(msgProviderUnavailable)
+		a.info(MsgProviderUnavailable)
 		return a.fail(res, AuthInfoUnavail, ReasonProviderUnavailable, fmt.Errorf("start device authorization: %w", err))
 	}
 	if a.expired(da) {

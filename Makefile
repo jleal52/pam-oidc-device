@@ -31,7 +31,7 @@ docker run --rm \
 	$(DOCKER_IMG) sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends libpam0g-dev >/dev/null && $(1); rc=$$?; chown -R "$$HOST_UID:$$HOST_GID" $(BUILD_DIR) 2>/dev/null; exit $$rc'
 endef
 
-.PHONY: test lint vet so so-native check-so vet-pam package integration clean
+.PHONY: test lint vet so so-native check-so vet-pam package integration mock-provider clean
 
 test:
 	$(GO) test ./...
@@ -74,8 +74,15 @@ check-so:
 package:
 	@echo "TODO: implemented in a later task"
 
-integration:
-	@echo "TODO: implemented in a later task"
+# Builds the module (Docker if needed) and the static mock provider, then runs
+# the pamtester scenarios in a stock Debian container (test/integration/run.sh).
+IT_IMG ?= pam-oidc-device-it
+mock-provider:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags='-s -w' -o $(BUILD_DIR)/mock-provider ./cmd/mock-provider
+
+integration: so mock-provider
+	docker build -q -f test/integration/Dockerfile -t $(IT_IMG) .
+	docker run --rm $(IT_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)

@@ -1,0 +1,8 @@
+# Configuration used by the pamtester integration test. allow_insecure_http
+# exists for this mock only: never set it on a real host.
+issuer: http://127.0.0.1:8089
+client_id: test-client
+allow_insecure_http: true
+timeout: 30s
+users:
+  systems: "ssh:admin"

@@ -249,7 +249,11 @@ func authenticate(pamh *C.pam_handle_t, opts options, lg *logger) C.int {
 		AllowInsecureHTTP: cfg.AllowInsecureHTTP,
 	})
 	cancel()
+	prompt := &prompter{pamh: pamh, lg: lg}
 	if err != nil {
+		// Same message the authenticator shows when a later request fails:
+		// the user must not be left staring at a silent prompt.
+		_ = prompt.Info(auth.MsgProviderUnavailable)
 		attempt.Result, attempt.Reason = pamlog.ResultError, auth.ReasonProviderUnavailable
 		attempt.Err = fmt.Errorf("discovery: %w", err)
 		lg.attempt(attempt)
@@ -259,7 +263,7 @@ func authenticate(pamh *C.pam_handle_t, opts options, lg *logger) C.int {
 
 	// The authenticator bounds its own wait (config timeout and device code
 	// lifetime), so the outer context is unbounded on purpose.
-	res := auth.New(cfg, client, &prompter{pamh: pamh, lg: lg}).Authenticate(context.Background(), user)
+	res := auth.New(cfg, client, prompt).Authenticate(context.Background(), user)
 	attempt.User, attempt.Subject = res.Username, res.Subject
 	attempt.Result, attempt.Reason, attempt.Err = pammap.Result(res.Code), res.Reason, res.Err
 
