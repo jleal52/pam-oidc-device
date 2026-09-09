@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -190,20 +191,80 @@ func checkEndpointsHTTPS(meta discoveredEndpoints, allowInsecure bool) error {
 	return nil
 }
 
+// reservedDeviceParams are the parameters of the device authorization
+// request that StartDeviceAuth builds itself. Letting a caller override
+// them through extra would silently change who is asking for what.
+var reservedDeviceParams = map[string]bool{
+	"client_id":   true,
+	"scope":       true,
+	"device_name": true,
+}
+
 // StartDeviceAuth requests a device and user code from the provider
 // (RFC 8628 §3.1). When deviceName is non-empty it is sent as the
 // non-standard "device_name" parameter, which some providers display on the
 // consent page.
-func (c *Client) StartDeviceAuth(ctx context.Context, deviceName string) (*oauth2.DeviceAuthResponse, error) {
+//
+// Every pair of extra is sent as an additional parameter of the same
+// request, in sorted order; entries with an empty name or value are
+// skipped. RFC 6749 §3.1 requires a provider to ignore parameters it does
+// not understand, so unknown extras are harmless. It is an error to pass a
+// parameter the client builds itself (client_id, scope, device_name) or a
+// name carrying whitespace or control characters; the request is not sent
+// in that case.
+func (c *Client) StartDeviceAuth(ctx context.Context, deviceName string, extra map[string]string) (*oauth2.DeviceAuthResponse, error) {
 	var opts []oauth2.AuthCodeOption
 	if deviceName != "" {
 		opts = append(opts, oauth2.SetAuthURLParam("device_name", deviceName))
+	}
+	names := make([]string, 0, len(extra))
+	for name := range extra {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := checkParamName(name); err != nil {
+			return nil, err
+		}
+		if extra[name] == "" {
+			continue
+		}
+		opts = append(opts, oauth2.SetAuthURLParam(name, extra[name]))
 	}
 	da, err := c.oauth.DeviceAuth(c.oauthContext(ctx), opts...)
 	if err != nil {
 		return nil, wrapProviderError("device authorization request", err)
 	}
 	return da, nil
+}
+
+// checkParamName rejects an extra parameter name that is empty, reserved or
+// not a plain token.
+func checkParamName(name string) error {
+	if name == "" {
+		return errors.New("oidc: device authorization parameter with an empty name")
+	}
+	if reservedDeviceParams[name] {
+		return fmt.Errorf("oidc: device authorization parameter %q is reserved", name)
+	}
+	for _, r := range name {
+		if unicode.IsSpace(r) || !unicode.IsPrint(r) {
+			return fmt.Errorf("oidc: device authorization parameter name %q is not a token", name)
+		}
+	}
+	return nil
+}
+
+// Metadata decodes the provider's discovery document into v, which must be
+// a pointer to a struct with the JSON tags of the fields wanted. It gives
+// access to metadata beyond the standard endpoints — the contract's
+// ssh_access_endpoint, for one — without a second request: the document was
+// already fetched by New.
+func (c *Client) Metadata(v any) error {
+	if err := c.provider.Claims(v); err != nil {
+		return fmt.Errorf("oidc: decode provider metadata: %w", err)
+	}
+	return nil
 }
 
 // WaitForToken polls the token endpoint (RFC 8628 §3.4) until the user

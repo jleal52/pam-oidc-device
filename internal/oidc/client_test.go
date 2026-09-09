@@ -52,7 +52,7 @@ func newClient(t *testing.T, p *testprovider.Provider) *oidc.Client {
 
 func startFlow(t *testing.T, c *oidc.Client, deviceName string) *oauth2.DeviceAuthResponse {
 	t.Helper()
-	da, err := c.StartDeviceAuth(context.Background(), deviceName)
+	da, err := c.StartDeviceAuth(context.Background(), deviceName, nil)
 	if err != nil {
 		t.Fatalf("StartDeviceAuth: %v", err)
 	}
@@ -166,6 +166,68 @@ func TestStartDeviceAuthOmitsEmptyDeviceName(t *testing.T) {
 	startFlow(t, c, "")
 	if got := p.LastDeviceName(); got != "" {
 		t.Errorf("device_name = %q, want empty", got)
+	}
+}
+
+func TestStartDeviceAuthSendsExtraParameters(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	c := newClient(t, p)
+
+	extra := map[string]string{
+		"account": "systems",
+		"intent":  "login",
+		// An empty value is not a parameter worth sending.
+		"host_assertion": "",
+	}
+	if _, err := c.StartDeviceAuth(context.Background(), "h", extra); err != nil {
+		t.Fatalf("StartDeviceAuth: %v", err)
+	}
+
+	form := p.LastDeviceParams()
+	if got := form.Get("account"); got != "systems" {
+		t.Errorf("account = %q, want %q", got, "systems")
+	}
+	if got := form.Get("intent"); got != "login" {
+		t.Errorf("intent = %q, want %q", got, "login")
+	}
+	if _, ok := form["host_assertion"]; ok {
+		t.Errorf("host_assertion sent with an empty value: %q", form.Get("host_assertion"))
+	}
+	// The parameters the client builds itself must survive untouched.
+	if got := p.LastDeviceName(); got != "h" {
+		t.Errorf("device_name = %q, want %q", got, "h")
+	}
+	if got := p.LastClientID(); got != testprovider.DefaultClientID {
+		t.Errorf("client_id = %q, want %q", got, testprovider.DefaultClientID)
+	}
+}
+
+func TestStartDeviceAuthWithoutExtraParameters(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	c := newClient(t, p)
+
+	startFlow(t, c, "h")
+
+	form := p.LastDeviceParams()
+	for _, name := range []string{"host_assertion", "account", "intent"} {
+		if _, ok := form[name]; ok {
+			t.Errorf("%s was sent (%q) although no extra parameters were given", name, form.Get(name))
+		}
+	}
+}
+
+func TestStartDeviceAuthRejectsReservedParameters(t *testing.T) {
+	t.Parallel()
+	p := newProvider(t)
+	c := newClient(t, p)
+
+	for _, name := range []string{"client_id", "scope", "device_name", "", "two words"} {
+		extra := map[string]string{name: "x"}
+		if _, err := c.StartDeviceAuth(context.Background(), "h", extra); err == nil {
+			t.Errorf("StartDeviceAuth with extra %q: got nil error, want a refusal", name)
+		}
 	}
 }
 
@@ -787,7 +849,7 @@ func TestStartDeviceAuthSanitizesProviderError(t *testing.T) {
 	t.Parallel()
 	srv, _ := stubIssuer(t, false, nil, oauthErrorHandler("invalid_client", nastyDescription), nil)
 	c := newStubClient(t, srv)
-	_, err := c.StartDeviceAuth(context.Background(), "h")
+	_, err := c.StartDeviceAuth(context.Background(), "h", nil)
 	assertSanitized(t, err, "400", "invalid_client")
 }
 

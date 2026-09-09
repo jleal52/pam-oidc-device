@@ -30,14 +30,17 @@ var fixedNow = time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 // call is counted so tests can assert that a branch made no network calls.
 type fakeFlow struct {
 	startCalls, waitCalls, verifyCalls int
+	// lastExtra is the extra parameter map of the last StartDeviceAuth call.
+	lastExtra map[string]string
 
 	start  func(ctx context.Context, deviceName string) (*oauth2.DeviceAuthResponse, error)
 	wait   func(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
 	verify func(ctx context.Context, raw, usernameClaim, groupsClaim string, skew time.Duration) (*oidc.Identity, error)
 }
 
-func (f *fakeFlow) StartDeviceAuth(ctx context.Context, deviceName string) (*oauth2.DeviceAuthResponse, error) {
+func (f *fakeFlow) StartDeviceAuth(ctx context.Context, deviceName string, extra map[string]string) (*oauth2.DeviceAuthResponse, error) {
 	f.startCalls++
+	f.lastExtra = extra
 	if f.start == nil {
 		return nil, errors.New("fakeFlow: StartDeviceAuth not configured")
 	}
@@ -528,6 +531,32 @@ func TestSuccessExportsEnv(t *testing.T) {
 		t.Errorf("Env = %v, want %v", res.Env, wantEnv)
 	}
 	assertLines(t, prompt.lines, expectedPromptLines)
+}
+
+// --- Device authorization extension parameters ---
+
+func TestDeviceAuthParamsAreForwarded(t *testing.T) {
+	t.Parallel()
+	extra := map[string]string{"host_assertion": "jwt", "account": "systems", "intent": "login"}
+	flow := happyFlow()
+	res := newAuthenticator(t, flow, &recordingPrompter{}).
+		WithDeviceAuthParams(extra).
+		Authenticate(context.Background(), "systems")
+
+	assertResult(t, res, auth.Success, "")
+	if !reflect.DeepEqual(flow.lastExtra, extra) {
+		t.Errorf("extra = %v, want %v", flow.lastExtra, extra)
+	}
+}
+
+func TestDeviceAuthParamsDefaultToNone(t *testing.T) {
+	t.Parallel()
+	flow := happyFlow()
+	newAuthenticator(t, flow, &recordingPrompter{}).Authenticate(context.Background(), "systems")
+
+	if flow.lastExtra != nil {
+		t.Errorf("extra = %v, want nil when none were set", flow.lastExtra)
+	}
 }
 
 // --- Prompter failures are never fatal ---

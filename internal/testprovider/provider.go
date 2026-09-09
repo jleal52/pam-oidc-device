@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -96,12 +97,13 @@ type Provider struct {
 	interval  int
 	expiresIn int
 	// recorded state
-	deviceCode string
-	userCode   string
-	clientID   string
-	scope      string
-	deviceName string
-	pollCount  int
+	deviceCode   string
+	userCode     string
+	clientID     string
+	scope        string
+	deviceName   string
+	deviceParams url.Values
+	pollCount    int
 	// SSH provider contract (ssh.go)
 	ssh sshState
 }
@@ -232,6 +234,28 @@ func (p *Provider) LastDeviceName() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.deviceName
+}
+
+// LastDeviceParams returns a copy of the form of the last
+// /device_authorization request, so that a test can assert on parameters
+// the provider has no dedicated accessor for — and, just as importantly, on
+// their absence. It is nil before the first request.
+func (p *Provider) LastDeviceParams() url.Values {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return cloneValues(p.deviceParams)
+}
+
+// cloneValues deep-copies a url.Values, or returns nil for a nil input.
+func cloneValues(in url.Values) url.Values {
+	if in == nil {
+		return nil
+	}
+	out := make(url.Values, len(in))
+	for k, v := range in {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
 }
 
 // LastClientID returns the client_id of the last /device_authorization request.
@@ -429,6 +453,7 @@ func (p *Provider) handleDeviceAuthorization(w http.ResponseWriter, r *http.Requ
 	p.clientID = clientID
 	p.scope = r.PostForm.Get("scope")
 	p.deviceName = r.PostForm.Get("device_name")
+	p.deviceParams = cloneValues(r.PostForm)
 	p.deviceCode = deviceCode
 	p.userCode = userCode
 	interval, expiresIn := p.interval, p.expiresIn

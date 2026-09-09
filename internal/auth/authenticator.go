@@ -144,7 +144,7 @@ type Prompter interface {
 // Flow is the subset of the OIDC client driven by the Authenticator. It is
 // satisfied by *oidc.Client.
 type Flow interface {
-	StartDeviceAuth(ctx context.Context, deviceName string) (*oauth2.DeviceAuthResponse, error)
+	StartDeviceAuth(ctx context.Context, deviceName string, extra map[string]string) (*oauth2.DeviceAuthResponse, error)
 	WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
 	VerifyIDToken(ctx context.Context, raw, usernameClaim, groupsClaim string, skew time.Duration) (*oidc.Identity, error)
 }
@@ -153,15 +153,26 @@ var _ Flow = (*oidc.Client)(nil)
 
 // Authenticator runs the login decision for one configuration.
 type Authenticator struct {
-	cfg    *config.Config
-	flow   Flow
-	prompt Prompter
-	now    func() time.Time
+	cfg         *config.Config
+	flow        Flow
+	prompt      Prompter
+	now         func() time.Time
+	deviceExtra map[string]string
 }
 
 // New returns an Authenticator using cfg, flow and prompt.
 func New(cfg *config.Config, flow Flow, prompt Prompter) *Authenticator {
 	return &Authenticator{cfg: cfg, flow: flow, prompt: prompt, now: time.Now}
+}
+
+// WithDeviceAuthParams adds extra parameters to the device authorization
+// request (the host assertion, account and intent of the provider
+// contract). It returns the receiver so that it can be chained onto New.
+// Building those parameters is the caller's job: the authenticator only
+// forwards them.
+func (a *Authenticator) WithDeviceAuthParams(extra map[string]string) *Authenticator {
+	a.deviceExtra = extra
+	return a
 }
 
 // Authenticate runs the device flow for a login as localUser and returns
@@ -174,7 +185,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, localUser string) Resu
 	}
 	res := Result{Group: group}
 
-	da, err := a.flow.StartDeviceAuth(ctx, a.cfg.DeviceName)
+	da, err := a.flow.StartDeviceAuth(ctx, a.cfg.DeviceName, a.deviceExtra)
 	if err == nil && da == nil {
 		err = errors.New("no device authorization response")
 	}

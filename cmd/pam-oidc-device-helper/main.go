@@ -20,6 +20,13 @@
 // /etc/oidc-ssh/config.yaml and /etc/security/pam_oidc_device.yaml),
 // --user <local account>, --rhost <client address>, --debug. The audit line
 // goes to syslog (authpriv), or to stderr when syslog is unavailable.
+//
+// When the host is enrolled (host_id and identity_key in the configuration)
+// the device authorization request also carries the contract's extension
+// parameters — host_assertion, account and intent — so that the provider
+// knows which machine and which local account the login is for. An
+// unenrolled host sends none of them and the flow is the plain device flow
+// of RFC 8628.
 package main
 
 import (
@@ -36,8 +43,10 @@ import (
 
 	"github.com/jleal52/pam-oidc-device/internal/auth"
 	"github.com/jleal52/pam-oidc-device/internal/config"
+	"github.com/jleal52/pam-oidc-device/internal/hostid"
 	"github.com/jleal52/pam-oidc-device/internal/oidc"
 	"github.com/jleal52/pam-oidc-device/internal/pamlog"
+	"github.com/jleal52/pam-oidc-device/internal/provider"
 )
 
 const syslogTag = "pam_oidc_device"
@@ -159,9 +168,27 @@ func run(out *protocol, lg *logger, configPath, user, rhost string) (code, reaso
 	}
 	lg.debugf("discovery ok for %s, starting device flow for %s", cfg.Issuer, user)
 
+	// Device flow extensions of the provider contract §6. They tell the
+	// provider which enrolled host and which local account the login is
+	// for; a host that is not enrolled sends nothing extra and gets the
+	// plain flow.
+	extra, err := deviceAuthParams(cfg, user, sshAccessEndpoint(client))
+	if err != nil {
+		// Carry on without them. The assertion only adds context to a
+		// decision the provider makes anyway, so a stale key path or an
+		// unreadable key must not lock out a host whose plain device flow
+		// still works; a provider that only serves managed hosts refuses
+		// the request itself.
+		lg.noticef("continuing without a host assertion: %v", err)
+		extra = nil
+	}
+	if extra != nil {
+		lg.debugf("device flow for host %s, account %s", cfg.HostID, user)
+	}
+
 	// The authenticator bounds its own wait (config timeout and device code
 	// lifetime); the module additionally enforces a wall-clock limit.
-	res := auth.New(cfg, client, out).Authenticate(context.Background(), user)
+	res := auth.New(cfg, client, out).WithDeviceAuthParams(extra).Authenticate(context.Background(), user)
 	attempt.User, attempt.Subject = res.Username, res.Subject
 	attempt.Reason, attempt.Err = res.Reason, res.Err
 
@@ -192,7 +219,57 @@ func run(out *protocol, lg *logger, configPath, user, rhost string) (code, reaso
 	}
 }
 
+// intentLogin is the value of the "intent" parameter for a login; the other
+// intent of the contract, "enroll", belongs to the oidc-ssh command.
+const intentLogin = "login"
+
+// deviceAuthParams builds the device authorization extension parameters of
+// the provider contract §6 for a login as account.
+//
+// A host that carries no host_id in its configuration is not enrolled: it
+// returns a nil map and nil error, and the request is byte for byte the one
+// earlier releases sent. Otherwise it mints a fresh host assertion —
+// addressed to the API base the contract's resolution order yields, which
+// is what the provider checks the "aud" claim against — and returns it
+// alongside the account and the intent.
+func deviceAuthParams(cfg *config.Config, account, discoveryEndpoint string) (map[string]string, error) {
+	if cfg.HostID == "" {
+		return nil, nil
+	}
+	base := provider.ResolveBase(cfg.APIBase, cfg.Issuer, discoveryEndpoint)
+	if base == "" {
+		return nil, errors.New("no api_base, ssh_access_endpoint or issuer to address the assertion to")
+	}
+	id, err := hostid.Load(cfg.IdentityKey)
+	if err != nil {
+		return nil, err
+	}
+	assertion, err := id.Assertion(cfg.HostID, base, nil)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		"host_assertion": assertion,
+		"account":        account,
+		"intent":         intentLogin,
+	}, nil
+}
+
+// sshAccessEndpoint returns the ssh_access_endpoint the provider advertises
+// in its discovery document, or "" when it advertises none. The document was
+// already fetched, so this costs no request.
+func sshAccessEndpoint(client *oidc.Client) string {
+	var meta struct {
+		SSHAccessEndpoint string `json:"ssh_access_endpoint"`
+	}
+	if err := client.Metadata(&meta); err != nil {
+		return ""
+	}
+	return meta.SSHAccessEndpoint
+}
+
 // exportEnv emits the session variables in a stable order. Names were
+
 // validated by the configuration (or are constants); values come from token
 // claims, so anything that is not clean UTF-8 text is rejected before it can
 // reach the module.
@@ -319,6 +396,12 @@ func (l *logger) debugf(format string, args ...any) {
 		return
 	}
 	l.log(pamlog.LevelDebug, pamlog.Sanitize(fmt.Sprintf(format, args...), 0))
+}
+
+// noticef reports a degraded but non-fatal condition; unlike debugf it is
+// always logged.
+func (l *logger) noticef(format string, args ...any) {
+	l.log(pamlog.LevelNotice, pamlog.Sanitize(fmt.Sprintf(format, args...), 0))
 }
 
 // attempt writes the audit line for one attempt at the level its result
