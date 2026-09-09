@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `docs/PROVIDER-CONTRACT.md`: the provider contract (v1) for key-based SSH
+  access — host identity and EdDSA host assertions, `POST /hosts/enroll`,
+  `GET /authorized-keys`, device-flow extensions (`host_assertion`,
+  `account`, `intent`) and `ssh_access_endpoint` discovery.
+- Configuration keys `api_base`, `host_id`, `identity_key` (default
+  `/etc/oidc-ssh/host.key`), `cache_dir` (default `/var/cache/oidc-ssh`) and
+  `cache_ttl` (default `24h`, `0s` disables the cache). Paths must be
+  absolute; `api_base` must be `https://` unless `allow_insecure_http` and is
+  kept verbatim.
+
+### Changed
+
+- The default configuration path is now `/etc/oidc-ssh/config.yaml`, shared
+  by the PAM helper and `oidc-ssh`. `config.LoadDefault` still reads
+  `/etc/security/pam_oidc_device.yaml` when the new path does not exist, so
+  existing installations keep working unchanged.
+
 ## [0.1.1] - 2026-09-09
 
 ### Fixed

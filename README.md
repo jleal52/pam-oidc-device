@@ -150,8 +150,10 @@ Requirements: Go 1.26, a C compiler and `libpam0g-dev` (or Docker).
 
 ## Configuration
 
-Default path `/etc/security/pam_oidc_device.yaml`; another path can be given
-with the `config=` module argument. The file is read on every attempt.
+Default path `/etc/oidc-ssh/config.yaml`; the pre-0.2.0 path
+`/etc/security/pam_oidc_device.yaml` is still read when the default does not
+exist, and another path can be given with the `config=` module argument. The
+file is read on every attempt.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -167,6 +169,11 @@ with the `config=` module argument. The file is read on every attempt.
 | `http_timeout` | `10s` | Bound on every single HTTP request (discovery, device request, each poll, JWKS). |
 | `allow_insecure_http` | `false` | Accept `http://` issuer and endpoints. For tests against a local mock only. |
 | `users` | required | Map `local account → required group`. Keys and values are trimmed; duplicates after trimming are rejected. |
+| `api_base` | discovery or `<issuer>/api/ssh` | Base URL of the provider's SSH access API ([contract](docs/PROVIDER-CONTRACT.md)). Kept verbatim; `https://` unless `allow_insecure_http`. Written by enrolment. |
+| `host_id` | unset | Host identifier assigned at enrolment; `iss`/`sub` of host assertions. Written by enrolment. |
+| `identity_key` | `/etc/oidc-ssh/host.key` | Absolute path of the host's Ed25519 private key. |
+| `cache_dir` | `/var/cache/oidc-ssh` | Absolute path of the last-known-good authorized-keys cache. |
+| `cache_ttl` | `24h` | Maximum age of a cached answer served while the provider is unreachable. `0s` disables the cache; negative values are rejected. |
 
 Unknown keys are rejected. Example (also shipped in the package):
 
@@ -179,6 +186,7 @@ users:
 ```
 
 Module arguments in `/etc/pam.d/*`: `config=<path>` (default
+`/etc/oidc-ssh/config.yaml`, falling back to
 `/etc/security/pam_oidc_device.yaml`), `helper=<path>` (default
 `/usr/libexec/pam-oidc-device/pam-oidc-device-helper`), `timeout=<seconds>`
 (wall-clock bound for the whole exchange, default 420; the helper is killed

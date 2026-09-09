@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,11 @@ func TestParseDefaults(t *testing.T) {
 		{"clock_skew", cfg.ClockSkew, 60 * time.Second},
 		{"http_timeout", cfg.HTTPTimeout, 10 * time.Second},
 		{"allow_insecure_http", cfg.AllowInsecureHTTP, false},
+		{"api_base", cfg.APIBase, ""},
+		{"host_id", cfg.HostID, ""},
+		{"identity_key", cfg.IdentityKey, "/etc/oidc-ssh/host.key"},
+		{"cache_dir", cfg.CacheDir, "/var/cache/oidc-ssh"},
+		{"cache_ttl", cfg.CacheTTL, 24 * time.Hour},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,6 +79,11 @@ timeout: 2m
 clock_skew: 30s
 http_timeout: 5s
 allow_insecure_http: true
+api_base: https://sso.example.org/ssh-api/
+host_id: 6a9f0c2e-1b7d-4e0a-9c1f-2d3e4f5a6b7c
+identity_key: /srv/oidc-ssh/host.key
+cache_dir: /srv/oidc-ssh/cache
+cache_ttl: 1h30m
 users:
   systems: "ssh:admin"
   ops: "ssh:ops"
@@ -94,6 +105,11 @@ users:
 		{"clock_skew", cfg.ClockSkew, 30 * time.Second},
 		{"http_timeout", cfg.HTTPTimeout, 5 * time.Second},
 		{"allow_insecure_http", cfg.AllowInsecureHTTP, true},
+		{"api_base", cfg.APIBase, "https://sso.example.org/ssh-api/"},
+		{"host_id", cfg.HostID, "6a9f0c2e-1b7d-4e0a-9c1f-2d3e4f5a6b7c"},
+		{"identity_key", cfg.IdentityKey, "/srv/oidc-ssh/host.key"},
+		{"cache_dir", cfg.CacheDir, "/srv/oidc-ssh/cache"},
+		{"cache_ttl", cfg.CacheTTL, 90 * time.Minute},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -233,6 +249,22 @@ func TestParseValidationErrors(t *testing.T) {
 		{"empty scope", minimalYAML + "scope: ''\n", ErrInvalidScope},
 		{"empty username_claim", minimalYAML + "username_claim: ''\n", ErrInvalidClaim},
 		{"empty groups_claim", minimalYAML + "groups_claim: ''\n", ErrInvalidClaim},
+		{"negative cache_ttl", minimalYAML + "cache_ttl: -1h\n", ErrInvalidDuration},
+		{"unparseable cache_ttl", minimalYAML + "cache_ttl: one day\n", ErrInvalidDuration},
+		{"relative identity_key", minimalYAML + "identity_key: host.key\n", ErrRelativePath},
+		{"empty identity_key", minimalYAML + "identity_key: ''\n", ErrRelativePath},
+		{"relative cache_dir", minimalYAML + "cache_dir: cache\n", ErrRelativePath},
+		{"empty cache_dir", minimalYAML + "cache_dir: ' '\n", ErrRelativePath},
+		{"http api_base without insecure flag", minimalYAML + "api_base: http://idp.example.com/api/ssh\n", ErrInvalidAPIBase},
+		{"relative api_base", minimalYAML + "api_base: /api/ssh\n", ErrInvalidAPIBase},
+		{"api_base without host", minimalYAML + "api_base: 'https://'\n", ErrInvalidAPIBase},
+		{"api_base with query", minimalYAML + "api_base: 'https://idp.example.com/api/ssh?x=1'\n", ErrInvalidAPIBase},
+		{"api_base with fragment", minimalYAML + "api_base: 'https://idp.example.com/api/ssh#f'\n", ErrInvalidAPIBase},
+		{"api_base with userinfo", minimalYAML + "api_base: 'https://u:p@idp.example.com/api/ssh'\n", ErrInvalidAPIBase},
+		{"ftp api_base", minimalYAML + "api_base: ftp://idp.example.com/api/ssh\n", ErrInvalidAPIBase},
+		{"host_id with space", minimalYAML + "host_id: 'a b'\n", ErrInvalidHostID},
+		{"host_id with tab", minimalYAML + "host_id: \"a\\tb\"\n", ErrInvalidHostID},
+		{"host_id with control char", minimalYAML + "host_id: \"a\\x01b\"\n", ErrInvalidHostID},
 		{"unknown key", minimalYAML + "jwks_cache: 1h\n", ErrInvalidYAML},
 		{"invalid yaml", "issuer: [\n", ErrInvalidYAML},
 		{"wrong type", "issuer: https://idp.example.com\nclient_id: c\nusers: [a, b]\n", ErrInvalidYAML},
@@ -282,6 +314,52 @@ func TestParseZeroClockSkewAllowed(t *testing.T) {
 	cfg := mustParse(t, minimalYAML+"clock_skew: 0s\n")
 	if cfg.ClockSkew != 0 {
 		t.Errorf("clock_skew = %v, want 0", cfg.ClockSkew)
+	}
+}
+
+func TestParseZeroCacheTTLDisablesCache(t *testing.T) {
+	cfg := mustParse(t, minimalYAML+"cache_ttl: 0s\n")
+	if cfg.CacheTTL != 0 {
+		t.Errorf("cache_ttl = %v, want 0", cfg.CacheTTL)
+	}
+}
+
+func TestParseAPIBase(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"absent", minimalYAML, ""},
+		{"empty means unset", minimalYAML + "api_base: ''\n", ""},
+		{"blank means unset", minimalYAML + "api_base: '   '\n", ""},
+		{"kept verbatim", minimalYAML + "api_base: https://idp.example.com/api/ssh\n", "https://idp.example.com/api/ssh"},
+		{"trailing slash preserved", minimalYAML + "api_base: https://idp.example.com/api/ssh/\n", "https://idp.example.com/api/ssh/"},
+		{"whitespace trimmed", minimalYAML + "api_base: '  https://idp.example.com/api/ssh  '\n", "https://idp.example.com/api/ssh"},
+		{"different host than issuer", minimalYAML + "api_base: https://ssh.example.net/v1\n", "https://ssh.example.net/v1"},
+		{"http with insecure flag", minimalYAML + "allow_insecure_http: true\napi_base: http://idp.local/api/ssh\n", "http://idp.local/api/ssh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := mustParse(t, tt.yaml)
+			if cfg.APIBase != tt.want {
+				t.Errorf("api_base = %q, want %q", cfg.APIBase, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseHostIDTrimmed(t *testing.T) {
+	cfg := mustParse(t, minimalYAML+"host_id: '  h-01  '\n")
+	if cfg.HostID != "h-01" {
+		t.Errorf("host_id = %q, want h-01", cfg.HostID)
+	}
+}
+
+func TestParsePathsTrimmed(t *testing.T) {
+	cfg := mustParse(t, minimalYAML+"identity_key: ' /k/host.key '\ncache_dir: ' /c '\n")
+	if cfg.IdentityKey != "/k/host.key" || cfg.CacheDir != "/c" {
+		t.Errorf("identity_key/cache_dir = %q/%q", cfg.IdentityKey, cfg.CacheDir)
 	}
 }
 
@@ -370,8 +448,85 @@ func TestLookupUserNilConfig(t *testing.T) {
 }
 
 func TestDefaultPath(t *testing.T) {
-	if DefaultPath != "/etc/security/pam_oidc_device.yaml" {
+	if DefaultPath != "/etc/oidc-ssh/config.yaml" {
 		t.Errorf("DefaultPath = %q", DefaultPath)
+	}
+	if LegacyPath != "/etc/security/pam_oidc_device.yaml" {
+		t.Errorf("LegacyPath = %q", LegacyPath)
+	}
+	if len(defaultPaths) != 2 || defaultPaths[0] != DefaultPath || defaultPaths[1] != LegacyPath {
+		t.Errorf("defaultPaths = %v, want [DefaultPath LegacyPath]", defaultPaths)
+	}
+}
+
+// writeYAML writes data to dir/name and returns the path.
+func writeYAML(t *testing.T, dir, name, data string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadFirstPrefersPrimary(t *testing.T) {
+	dir := t.TempDir()
+	primary := writeYAML(t, dir, "config.yaml", minimalYAML+"device_name: primary\n")
+	legacy := writeYAML(t, dir, "legacy.yaml", minimalYAML+"device_name: legacy\n")
+	cfg, err := loadFirst([]string{primary, legacy})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DeviceName != "primary" {
+		t.Errorf("device_name = %q, want primary", cfg.DeviceName)
+	}
+}
+
+func TestLoadFirstFallsBackToLegacy(t *testing.T) {
+	dir := t.TempDir()
+	legacy := writeYAML(t, dir, "legacy.yaml", minimalYAML+"device_name: legacy\n")
+	cfg, err := loadFirst([]string{filepath.Join(dir, "missing.yaml"), legacy})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DeviceName != "legacy" {
+		t.Errorf("device_name = %q, want legacy", cfg.DeviceName)
+	}
+}
+
+func TestLoadFirstNoneExists(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.yaml"), filepath.Join(dir, "b.yaml")
+	cfg, err := loadFirst([]string{a, b})
+	if !errors.Is(err, ErrNoConfigFile) {
+		t.Fatalf("err = %v, want ErrNoConfigFile", err)
+	}
+	if cfg != nil {
+		t.Errorf("config must be nil on error")
+	}
+	for _, p := range []string{a, b} {
+		if !strings.Contains(err.Error(), p) {
+			t.Errorf("error %q must name %s", err, p)
+		}
+	}
+}
+
+func TestLoadFirstInvalidPrimaryDoesNotFallBack(t *testing.T) {
+	dir := t.TempDir()
+	primary := writeYAML(t, dir, "config.yaml", "client_id: only\n")
+	legacy := writeYAML(t, dir, "legacy.yaml", minimalYAML)
+	_, err := loadFirst([]string{primary, legacy})
+	if !errors.Is(err, ErrMissingIssuer) {
+		t.Fatalf("err = %v, want ErrMissingIssuer (a broken primary must not be masked by the legacy file)", err)
+	}
+}
+
+func TestFindFirst(t *testing.T) {
+	dir := t.TempDir()
+	legacy := writeYAML(t, dir, "legacy.yaml", minimalYAML)
+	got, err := findFirst([]string{filepath.Join(dir, "missing.yaml"), legacy})
+	if err != nil || got != legacy {
+		t.Fatalf("findFirst = (%q, %v), want (%q, nil)", got, err, legacy)
 	}
 }
 
@@ -407,5 +562,13 @@ func TestPackagedExampleParses(t *testing.T) {
 	// The example documents its own defaults; they must still be the defaults.
 	if cfg.Timeout != DefaultTimeout || cfg.HTTPTimeout != DefaultHTTPTimeout || cfg.ClockSkew != DefaultClockSkew {
 		t.Fatalf("example durations diverge from defaults: %s %s %s", cfg.Timeout, cfg.HTTPTimeout, cfg.ClockSkew)
+	}
+	if cfg.IdentityKey != DefaultIdentityKey || cfg.CacheDir != DefaultCacheDir || cfg.CacheTTL != DefaultCacheTTL {
+		t.Fatalf("example key-access settings diverge from defaults: %s %s %s", cfg.IdentityKey, cfg.CacheDir, cfg.CacheTTL)
+	}
+	// api_base and host_id are written by enrolment; the shipped example
+	// must not pretend the host is enrolled.
+	if cfg.APIBase != "" || cfg.HostID != "" {
+		t.Fatalf("example must leave api_base/host_id unset, got %q / %q", cfg.APIBase, cfg.HostID)
 	}
 }

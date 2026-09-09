@@ -1,9 +1,11 @@
-# pam_oidc_device configuration.
+# pam-oidc-device configuration, shared by the PAM module and oidc-ssh.
 #
-# Copy to /etc/security/pam_oidc_device.yaml (the default path; another
-# location can be given with the "config=" module argument), make it readable
-# by root only if it should stay private, and adjust the values below. The
-# file is read on every login attempt, so edits take effect immediately.
+# Copy to /etc/oidc-ssh/config.yaml (the default path; another location can
+# be given with the "config=" module argument). The pre-0.2.0 path
+# /etc/security/pam_oidc_device.yaml is still read when the default does not
+# exist. Make the file readable by root and the oidc-ssh user only (0640
+# root:oidc-ssh) and adjust the values below. The file is read on every
+# login attempt, so edits take effect immediately.
 #
 # How access works
 # ----------------
@@ -66,10 +68,39 @@ clock_skew: 60s
 # Bound on every single HTTP request to the provider. Default: 10s.
 http_timeout: 10s
 
-# Plain http:// issuers are rejected unless this is true. It exists only for
-# tests against a local mock provider: never enable it on a real host, the
-# token would travel unencrypted and the issuer could be spoofed.
+# Plain http:// issuers and API bases are rejected unless this is true. It
+# exists only for tests against a local mock provider: never enable it on a
+# real host, the token would travel unencrypted and the issuer could be
+# spoofed.
 # allow_insecure_http: false
+
+# Key-based access (oidc-ssh, see docs/PROVIDER-CONTRACT.md)
+# ----------------------------------------------------------
+# The keys below are only used once the host is enrolled with
+# "oidc-ssh enroll"; the plain device flow ignores them.
+
+# Base URL of the provider's SSH access API. Optional: when absent, the
+# "ssh_access_endpoint" of the discovery document is used, and failing that
+# <issuer>/api/ssh. Kept verbatim (no trailing-slash normalisation); must be
+# https unless allow_insecure_http is set. Written by "oidc-ssh enroll".
+# api_base: https://login.example.com/api/ssh
+
+# Identifier assigned to this host by the provider at enrolment. Written by
+# "oidc-ssh enroll"; leave unset until then.
+# host_id: 6a9f0c2e-1b7d-4e0a-9c1f-2d3e4f5a6b7c
+
+# Absolute path of the host's Ed25519 private key (0640 root:oidc-ssh).
+# Default: /etc/oidc-ssh/host.key.
+identity_key: /etc/oidc-ssh/host.key
+
+# Absolute path of the last-known-good authorized-keys cache (0700 oidc-ssh).
+# Default: /var/cache/oidc-ssh.
+cache_dir: /var/cache/oidc-ssh
+
+# Maximum age of a cached answer that may be served while the provider is
+# unreachable (network error, timeout or 5xx). Denials are never cached.
+# "0s" disables the cache. Default: 24h.
+cache_ttl: 24h
 
 # Local account -> group required in groups_claim (at least one entry). Every
 # member of the group logs in as that account; the personal identity is kept

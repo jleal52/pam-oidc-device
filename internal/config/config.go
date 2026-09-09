@@ -1,4 +1,5 @@
-// Package config loads and validates the YAML configuration of the PAM module.
+// Package config loads and validates the YAML configuration shared by the PAM
+// module helper and the oidc-ssh command.
 //
 // The configuration file is read once per login attempt, so parsing favours
 // strictness over speed: unknown keys are rejected, every value is validated
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -18,9 +20,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultPath is the location of the configuration file when the PAM module
-// is invoked without an explicit "config=" argument.
-const DefaultPath = "/etc/security/pam_oidc_device.yaml"
+// DefaultPath is the location of the configuration file when no explicit
+// path is given. It is shared by the PAM module helper and oidc-ssh.
+const DefaultPath = "/etc/oidc-ssh/config.yaml"
+
+// LegacyPath is the configuration path used by releases before 0.2.0. It is
+// still honoured by LoadDefault when DefaultPath does not exist so that an
+// upgrade does not lock anybody out.
+const LegacyPath = "/etc/security/pam_oidc_device.yaml"
+
+// defaultPaths is the search order used by LoadDefault.
+var defaultPaths = []string{DefaultPath, LegacyPath}
 
 // hostnamePlaceholder is replaced by the machine hostname inside device_name.
 const hostnamePlaceholder = "{{hostname}}"
@@ -39,6 +49,9 @@ const (
 	DefaultTimeout       = 300 * time.Second
 	DefaultClockSkew     = 60 * time.Second
 	DefaultHTTPTimeout   = 10 * time.Second
+	DefaultIdentityKey   = "/etc/oidc-ssh/host.key"
+	DefaultCacheDir      = "/var/cache/oidc-ssh"
+	DefaultCacheTTL      = 24 * time.Hour
 )
 
 // Sentinel errors returned (wrapped) by Parse and Load. Use errors.Is to match.
@@ -56,6 +69,10 @@ var (
 	ErrInvalidClaim      = errors.New("claim name must not be empty")
 	ErrInvalidDuration   = errors.New("invalid duration")
 	ErrHostname          = errors.New("cannot resolve hostname")
+	ErrInvalidAPIBase    = errors.New("api_base must be an absolute https URL")
+	ErrInvalidHostID     = errors.New("host_id must not contain whitespace or control characters")
+	ErrRelativePath      = errors.New("path must be absolute")
+	ErrNoConfigFile      = errors.New("no configuration file found")
 )
 
 // Config is the validated, ready-to-use module configuration.
@@ -94,6 +111,22 @@ type Config struct {
 	// GroupsClaim to log in as that account. Keys and values are
 	// whitespace-trimmed.
 	Users map[string]string
+	// APIBase is the base URL of the provider's SSH access API (see
+	// docs/PROVIDER-CONTRACT.md). It is kept verbatim apart from trimming;
+	// empty means "resolve from discovery or derive from the issuer".
+	APIBase string
+	// HostID is the identifier assigned to this host at enrolment. Empty
+	// until the host is enrolled; then it becomes the iss/sub of host
+	// assertions.
+	HostID string
+	// IdentityKey is the absolute path of the host's Ed25519 private key.
+	IdentityKey string
+	// CacheDir is the absolute path of the last-known-good key cache.
+	CacheDir string
+	// CacheTTL bounds the age of a cached authorized-keys answer that may
+	// still be served when the provider is unavailable. Zero disables the
+	// cache.
+	CacheTTL time.Duration
 }
 
 // rawConfig mirrors Config with string durations so that YAML values such as
@@ -112,6 +145,11 @@ type rawConfig struct {
 	HTTPTimeout       *string           `yaml:"http_timeout"`
 	AllowInsecureHTTP bool              `yaml:"allow_insecure_http"`
 	Users             map[string]string `yaml:"users"`
+	APIBase           *string           `yaml:"api_base"`
+	HostID            *string           `yaml:"host_id"`
+	IdentityKey       *string           `yaml:"identity_key"`
+	CacheDir          *string           `yaml:"cache_dir"`
+	CacheTTL          *string           `yaml:"cache_ttl"`
 }
 
 // Load reads the YAML file at path and returns the validated configuration.
@@ -125,6 +163,48 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%w (file %s)", err, path)
 	}
 	return cfg, nil
+}
+
+// LoadDefault loads the configuration from the first existing file among
+// DefaultPath and LegacyPath, in that order. When neither exists the error
+// wraps ErrNoConfigFile and names both locations.
+func LoadDefault() (*Config, error) {
+	return loadFirst(defaultPaths)
+}
+
+// FindDefault returns the path LoadDefault would read: the first existing
+// file among DefaultPath and LegacyPath. It is what a tool that rewrites the
+// configuration (enrolment) must edit so that later loads see the change.
+func FindDefault() (string, error) {
+	return findFirst(defaultPaths)
+}
+
+// loadFirst is LoadDefault with an injectable search list.
+func loadFirst(paths []string) (*Config, error) {
+	path, err := findFirst(paths)
+	if err != nil {
+		return nil, err
+	}
+	return Load(path)
+}
+
+// findFirst returns the first path that exists. A stat failure other than
+// "does not exist" (a permission problem, typically) is reported instead of
+// being skipped, so that a misconfigured primary file cannot silently hand
+// control to the legacy one.
+func findFirst(paths []string) (string, error) {
+	for _, p := range paths {
+		_, err := os.Stat(p)
+		switch {
+		case err == nil:
+			return p, nil
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		default:
+			return "", fmt.Errorf("config: stat %s: %w", p, err)
+		}
+	}
+	return "", fmt.Errorf("config: %w: none of %s exists", ErrNoConfigFile, strings.Join(paths, ", "))
 }
 
 // Parse decodes a YAML document, applies defaults, expands {{hostname}} with
@@ -151,6 +231,10 @@ func parseWithHostname(data []byte, hostname func() (string, error)) (*Config, e
 		SessionEnv:        strings.TrimSpace(deref(raw.SessionEnv, DefaultSessionEnv)),
 		AllowInsecureHTTP: raw.AllowInsecureHTTP,
 		Users:             raw.Users,
+		APIBase:           strings.TrimSpace(deref(raw.APIBase, "")),
+		HostID:            strings.TrimSpace(deref(raw.HostID, "")),
+		IdentityKey:       strings.TrimSpace(deref(raw.IdentityKey, DefaultIdentityKey)),
+		CacheDir:          strings.TrimSpace(deref(raw.CacheDir, DefaultCacheDir)),
 	}
 
 	if cfg.Timeout, err = parseDuration("timeout", raw.Timeout, DefaultTimeout); err != nil {
@@ -160,6 +244,9 @@ func parseWithHostname(data []byte, hostname func() (string, error)) (*Config, e
 		return nil, err
 	}
 	if cfg.HTTPTimeout, err = parseDuration("http_timeout", raw.HTTPTimeout, DefaultHTTPTimeout); err != nil {
+		return nil, err
+	}
+	if cfg.CacheTTL, err = parseDuration("cache_ttl", raw.CacheTTL, DefaultCacheTTL); err != nil {
 		return nil, err
 	}
 
@@ -255,6 +342,23 @@ func (c *Config) validate() error {
 	if c.ClockSkew < 0 {
 		return fmt.Errorf("config: clock_skew: %w: must not be negative, got %s", ErrInvalidDuration, c.ClockSkew)
 	}
+	if c.CacheTTL < 0 {
+		return fmt.Errorf("config: cache_ttl: %w: must not be negative, got %s", ErrInvalidDuration, c.CacheTTL)
+	}
+	if c.APIBase != "" {
+		if err := validateURL(c.APIBase, c.AllowInsecureHTTP, "api_base", ErrInvalidAPIBase); err != nil {
+			return err
+		}
+	}
+	if strings.IndexFunc(c.HostID, isSpaceOrControl) >= 0 {
+		return fmt.Errorf("config: %w: %q", ErrInvalidHostID, c.HostID)
+	}
+	if !filepath.IsAbs(c.IdentityKey) {
+		return fmt.Errorf("config: identity_key: %w: %q", ErrRelativePath, c.IdentityKey)
+	}
+	if !filepath.IsAbs(c.CacheDir) {
+		return fmt.Errorf("config: cache_dir: %w: %q", ErrRelativePath, c.CacheDir)
+	}
 	users, err := normaliseUsers(c.Users)
 	if err != nil {
 		return err
@@ -286,25 +390,37 @@ func normaliseUsers(in map[string]string) (map[string]string, error) {
 	return out, nil
 }
 
+func isSpaceOrControl(r rune) bool {
+	return r <= ' ' || r == 0x7f || (r >= 0x80 && r < 0xa0)
+}
+
 func validateIssuer(issuer string, allowInsecure bool) error {
-	u, err := url.Parse(issuer)
+	return validateURL(issuer, allowInsecure, "issuer", ErrInvalidIssuer)
+}
+
+// validateURL checks that value is an absolute http(s) URL with a host and
+// without query, fragment or userinfo. Plain http is accepted only when
+// allowInsecure is set. field names the key in error messages and sentinel is
+// the wrapped error.
+func validateURL(value string, allowInsecure bool, field string, sentinel error) error {
+	u, err := url.Parse(value)
 	if err != nil {
-		return fmt.Errorf("config: %w: %v", ErrInvalidIssuer, err)
+		return fmt.Errorf("config: %s: %w: %v", field, sentinel, err)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("config: %w: %q", ErrInvalidIssuer, issuer)
+		return fmt.Errorf("config: %s: %w: %q", field, sentinel, value)
 	}
 	// OpenID Connect Discovery 1.0 §3: the issuer has no query or fragment
-	// component; userinfo is rejected as well so credentials never end up
-	// in a discovery URL.
+	// component; the same holds for an API base that gets paths appended.
+	// Userinfo is rejected as well so credentials never end up in a URL.
 	if u.RawQuery != "" || u.ForceQuery {
-		return fmt.Errorf("config: %w: %q must not contain a query component", ErrInvalidIssuer, issuer)
+		return fmt.Errorf("config: %s: %w: %q must not contain a query component", field, sentinel, value)
 	}
-	if strings.Contains(issuer, "#") {
-		return fmt.Errorf("config: %w: %q must not contain a fragment", ErrInvalidIssuer, issuer)
+	if strings.Contains(value, "#") {
+		return fmt.Errorf("config: %s: %w: %q must not contain a fragment", field, sentinel, value)
 	}
 	if u.User != nil {
-		return fmt.Errorf("config: %w: %q must not contain userinfo", ErrInvalidIssuer, issuer)
+		return fmt.Errorf("config: %s: %w: %q must not contain userinfo", field, sentinel, value)
 	}
 	switch u.Scheme {
 	case "https":
@@ -313,8 +429,8 @@ func validateIssuer(issuer string, allowInsecure bool) error {
 		if allowInsecure {
 			return nil
 		}
-		return fmt.Errorf("config: %w: %q uses http (set allow_insecure_http: true only for testing)", ErrInvalidIssuer, issuer)
+		return fmt.Errorf("config: %s: %w: %q uses http (set allow_insecure_http: true only for testing)", field, sentinel, value)
 	default:
-		return fmt.Errorf("config: %w: %q", ErrInvalidIssuer, issuer)
+		return fmt.Errorf("config: %s: %w: %q", field, sentinel, value)
 	}
 }

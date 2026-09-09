@@ -16,7 +16,8 @@
 //	E <NAME>=<value>    environment variable to export into the session
 //	R <code> <reason>   final result: success | ignore | auth_err | authinfo_unavail | user_unknown
 //
-// Flags: --config <path> (default /etc/security/pam_oidc_device.yaml),
+// Flags: --config <path> (default: the first existing of
+// /etc/oidc-ssh/config.yaml and /etc/security/pam_oidc_device.yaml),
 // --user <local account>, --rhost <client address>, --debug. The audit line
 // goes to syslog (authpriv), or to stderr when syslog is unavailable.
 package main
@@ -68,7 +69,7 @@ var errInvalidEnv = errors.New("invalid environment value")
 func main() {
 	fs := flag.NewFlagSet("pam-oidc-device-helper", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	configPath := fs.String("config", config.DefaultPath, "configuration file")
+	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+", then "+config.LegacyPath+")")
 	user := fs.String("user", "", "local account requested from PAM")
 	rhost := fs.String("rhost", "", "client address (PAM_RHOST)")
 	debug := fs.Bool("debug", false, "verbose syslog")
@@ -86,6 +87,15 @@ func main() {
 	if err := out.flush(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// loadConfig reads the configuration from path, or from the default search
+// list when path is empty.
+func loadConfig(path string) (*config.Config, error) {
+	if path == "" {
+		return config.LoadDefault()
+	}
+	return config.Load(path)
 }
 
 // run performs the attempt and never panics: a panic is logged and reported
@@ -112,7 +122,7 @@ func run(out *protocol, lg *logger, configPath, user, rhost string) (code, reaso
 		return codeUserUnknown, reasonNoUser
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		attempt.Result, attempt.Reason, attempt.Err = pamlog.ResultError, reasonConfig, err
 		lg.attempt(attempt)
