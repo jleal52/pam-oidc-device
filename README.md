@@ -133,9 +133,12 @@ to the behaviour it had before they existed.
 ### From a release (deb / rpm)
 
 Releases ship `.deb` (amd64, arm64; depends on `libpam0g`) and `.rpm`
-(x86_64, aarch64; depends on `pam`) packages, the raw shared object, an SBOM,
+(x86_64, aarch64; depends on `pam`) packages, the raw shared object,
 `SHA256SUMS`, and a keyless [cosign](https://github.com/sigstore/cosign)
-signature (`.sig` + `.pem`) for every file. Verify before installing:
+signature (`.sig` + `.pem`) for every file. From the release after 0.2.0 they
+also carry an SPDX SBOM: the action that was supposed to produce it silently
+ignored the inputs it was given, so 0.1.0 through 0.2.0 shipped without one.
+Verify before installing:
 
 ```sh
 cosign verify-blob \

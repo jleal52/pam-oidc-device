@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Releases never carried the SBOM they advertised. The pinned
+  `anchore/sbom-action` predated the `output-file` input, warned "Unexpected
+  input(s)" and wrote nothing, so 0.1.0 through 0.2.0 shipped without one and
+  nothing failed. The action is updated and the workflow now asserts the file
+  exists before checksumming and signing it.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added

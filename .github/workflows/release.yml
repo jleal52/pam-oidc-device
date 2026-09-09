@@ -71,14 +71,21 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+      # v0.9.0 did not know `output-file`, `upload-artifact` or
+      # `upload-release-assets`: it warned "Unexpected input(s)", ignored
+      # them, and wrote nothing into dist/. Every release from 0.1.0 to
+      # 0.2.0 therefore shipped without the SBOM the README promised, and
+      # nothing failed. Hence the assertion below.
       - name: SBOM
-        uses: anchore/sbom-action@f6c3d0fe42c3cf876e3462574e4c9416b5e0f07a # v0.9.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: .
           format: spdx-json
           output-file: dist/pam-oidc-device-${{ github.ref_name }}.sbom.spdx.json
           upload-artifact: false
           upload-release-assets: false
+      - name: The SBOM must exist before it is checksummed and signed
+        run: test -s "dist/pam-oidc-device-${GITHUB_REF_NAME}.sbom.spdx.json"
       - name: Checksums
         run: cd dist && sha256sum -- * > SHA256SUMS
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
