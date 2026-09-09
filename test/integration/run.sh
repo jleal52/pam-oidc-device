@@ -58,8 +58,12 @@ port_is_free() {
 # RC, stdout in $WORK/out and stderr in $WORK/err.
 run_pamtester() {
     set +e
-    pamtester "$1" "$2" authenticate >"$WORK/out" 2>"$WORK/err"
+    # An empty line on stdin answers the "press Enter" prompt; pamtester
+    # writes prompts to stderr and PAM_TEXT_INFO to stdout, so both are
+    # merged into out for the message assertions.
+    echo | pamtester "$1" "$2" authenticate >"$WORK/out" 2>"$WORK/err"
     RC=$?
+    cat "$WORK/err" >>"$WORK/out"
     set -e
 }
 

@@ -88,6 +88,10 @@ const (
 	msgTimeout = "No approval received in time."
 	// msgNotAllowed takes the local user name.
 	msgNotAllowed = "Not allowed to log in as %s on this host."
+	// msgCodePromptFmt takes the user code; shown as a prompt so that
+	// applications which only relay text together with a prompt (sshd)
+	// display it before the wait starts.
+	msgCodePromptFmt = "Code: %s. Press Enter after approving in the browser: "
 )
 
 // EnvSubject is the environment variable that receives the token subject.
@@ -125,7 +129,16 @@ type Result struct {
 // must never change the outcome of the login, which is decided by the
 // identity provider alone.
 type Prompter interface {
+	// Info shows a message (PAM_TEXT_INFO).
 	Info(msg string) error
+	// Prompt shows a message and waits for the user to acknowledge it
+	// (PAM_PROMPT_ECHO_OFF; the answer is discarded). Applications such as
+	// sshd only deliver pending informational messages to the client
+	// together with a prompt, so the device code is shown this way and the
+	// user presses Enter once the login is approved. A Prompter that cannot
+	// prompt returns an error, which the authenticator ignores: polling
+	// starts right away and the approval is picked up anyway.
+	Prompt(msg string) error
 }
 
 // Flow is the subset of the OIDC client driven by the Authenticator. It is
@@ -222,7 +235,9 @@ func (a *Authenticator) showInstructions(da *oauth2.DeviceAuthResponse) {
 	}
 	a.info(msgOpenURL)
 	a.info("  " + uri)
-	a.info("Code: " + da.UserCode)
+	if a.prompt != nil {
+		_ = a.prompt.Prompt(fmt.Sprintf(msgCodePromptFmt, da.UserCode))
+	}
 }
 
 // expired reports whether the device code lifetime, when the provider

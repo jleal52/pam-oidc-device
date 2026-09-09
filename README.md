@@ -13,12 +13,13 @@ per-person Unix users, no SSH keys to distribute and no directory sync.
 $ ssh systems@bastion
 Open the following URL in a browser and approve this login:
   https://login.example.com/device?user_code=BCDF-GHJK
-Code: BCDF-GHJK
+Code: BCDF-GHJK. Press Enter after approving in the browser:
 ```
 
 The person opens the link on any device, signs in with their usual identity
-provider flow (SSO, MFA, whatever the provider enforces), approves, and the
-SSH session continues. Their identity is exported to the session as
+provider flow (SSO, MFA, whatever the provider enforces), approves, presses
+Enter, and the SSH session continues (pressing Enter early is fine: the module
+keeps polling until the approval arrives or the time runs out). Their identity is exported to the session as
 `OIDC_USER` and written to syslog, so a shared account stays attributable.
 
 Status: 0.1.0 — tested against an in-house OpenID Connect provider, on Debian
@@ -41,15 +42,22 @@ that are already open when a permission is revoked at the provider.
 
 ## How it works
 
+The module itself (`pam_oidc_device.so`) is a small C shared object. For every
+login it starts the helper `pam-oidc-device-helper`, a static Go binary that
+does all the work and talks back over a pipe (messages to show, variables to
+export, the final result). No Go runtime ever runs inside the application
+calling PAM, which is what makes the module safe under OpenSSH's process model
+(sshd runs `pam_authenticate` in a child created with `fork()`).
+
 ```
  sshd (keyboard-interactive) → PAM → pam_oidc_device.so         Identity provider          Browser
  ───────────────────────────────────────────────────────         ─────────────────          ───────
  1. user mapped? no → PAM_IGNORE (no network)
  2. GET  <issuer>/.well-known/openid-configuration ─────────────▶
  3. POST device_authorization_endpoint (client_id, scope, device_name) ─▶ device_code, user_code, URL
- 4. PAM_TEXT_INFO: URL + code                                                            user opens URL,
- 5. POST token_endpoint every <interval> s ─────────────────────▶ authorization_pending   signs in, approves
-                                                                 … → id_token
+ 4. PAM_TEXT_INFO: URL; PAM_PROMPT_ECHO_OFF: "Code: …, press Enter"                     user opens URL,
+ 5. POST token_endpoint every <interval> s ─────────────────────▶ authorization_pending   signs in, approves,
+                                                                 … → id_token             presses Enter
  6. verify id_token: signature (JWKS, RS256/ES256), iss, aud=client_id, exp/iat ± clock_skew
  7. groups claim contains the group mapped to the local account? no → PAM_AUTH_ERR
  8. pam_putenv OIDC_USER=<username claim>, OIDC_SUB=<sub>; syslog; PAM_SUCCESS
@@ -123,16 +131,18 @@ sudo dnf install ./pam-oidc-device-0.1.0-1.x86_64.rpm    # Fedora/RHEL
 ```
 
 The package installs `pam_oidc_device.so` into the distribution's PAM module
-directory and an annotated example configuration under
+directory, the helper under `/usr/libexec/pam-oidc-device/`, and an annotated
+example configuration under
 `/usr/share/doc/pam-oidc-device/config.example.yaml`. It changes nothing else:
 the module is inert until referenced from `/etc/pam.d`.
 
 ### From source
 
 ```sh
-make so          # build/pam_oidc_device.so (uses Docker if libpam0g-dev is missing)
+make so helper   # build/pam_oidc_device.so (C; Docker if libpam0g-dev is missing) and build/pam-oidc-device-helper (Go, static)
 make check-so    # the three pam_sm_* symbols must be exported
 sudo install -m 0644 build/pam_oidc_device.so /usr/lib/$(gcc -print-multiarch)/security/
+sudo install -D -m 0755 build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
 make package VERSION=0.1.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
 ```
 
@@ -168,8 +178,11 @@ users:
   ops: ssh:ops
 ```
 
-Module arguments in `/etc/pam.d/*`: `config=<path>`, `debug` (log ignored
-attempts at DEBUG and unknown arguments at NOTICE).
+Module arguments in `/etc/pam.d/*`: `config=<path>` (default
+`/etc/security/pam_oidc_device.yaml`), `helper=<path>` (default
+`/usr/libexec/pam-oidc-device/pam-oidc-device-helper`), `timeout=<seconds>`
+(wall-clock bound for the whole exchange, default 420; the helper is killed
+when it elapses), `debug` (verbose syslog, ignored attempts at DEBUG).
 
 ## PAM and sshd setup
 
@@ -253,11 +266,16 @@ your log platform and search by `user=`.
   the terminal (control characters stripped) or syslog (collapsed, bounded).
 - **Revocation** at the provider stops new logins immediately (subject to any
   caching in the provider) but does not end sessions already open.
-- **Go runtime inside the PAM host process.** Loading the module starts the
-  Go runtime in sshd's authentication child, like other Go PAM modules. It
-  works with OpenSSH privilege separation; applications that `fork()` after
-  loading PAM and call the module in the child without `exec` are not
-  supported.
+- **No foreign runtime in the PAM host.** The shared object is ~200 lines of
+  C; the Go code runs in a separate, freshly exec'ed process per login and
+  can only talk back through a strict line protocol (messages, environment
+  entries, one result). A helper crash, an early exit or the wall-clock
+  `timeout` all fail closed.
+- **Messages on failure.** OpenSSH only relays informational PAM text to the
+  client together with a prompt, so on a failed login the SSH client shows
+  the usual "Permission denied (keyboard-interactive)" and the specific
+  reason is in syslog (`reason=`). Interactive PAM applications (login, su,
+  pamtester) show the messages directly.
 
 Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
 
@@ -265,12 +283,13 @@ Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| "Identity provider unavailable, cannot continue." | No egress to the issuer, DNS, or provider down | `curl -sS <issuer>/.well-known/openid-configuration` from the host. Use the break-glass account. |
+| Login fails right away; syslog `reason=provider_unavailable` (interactive apps also show "Identity provider unavailable") | No egress to the issuer, DNS, or provider down | `curl -sS <issuer>/.well-known/openid-configuration` from the host. Use the break-glass account. |
 | Prompt appears, then "No approval received in time." | Nobody approved within `timeout` | Approve faster or raise `timeout` (and `LoginGraceTime`). |
 | "The code expired before approval; try again." | Provider's `expires_in` elapsed, or the code was approved after expiry | Retry. |
 | "Login denied." | The person denied, or lacks the provider-side permission to approve | Provider audit log; `reason=denied` in syslog. |
 | "Not allowed to log in as systems on this host." | Approved, but the token's groups do not contain the required group | Assign the group at the provider; check `groups_claim` and `scope`. |
 | Connection closes after ~2 minutes with no message | sshd `LoginGraceTime` (default 120 s) shorter than the flow | Set `LoginGraceTime 400` or lower `timeout`. |
+| syslog `helper ... is not executable` | Helper missing or installed elsewhere | Install the package or pass `helper=<path>`. |
 | `reason=invalid_token` | Wrong `client_id` (`aud`), issuer mismatch, clock skew, key rotation | Compare `issuer` with the discovery `issuer`; check NTP; `clock_skew`. |
 | Unmapped users are denied instead of falling through | `auth required` used instead of `[success=done ignore=ignore default=die]` | Fix the control field. |
 | `slow_down` loops | Provider interval below what it accepts | The module already backs off as the RFC requires; check the provider's own limits. |
@@ -288,23 +307,24 @@ pamtester oidc-test systems authenticate
 ## Development
 
 ```sh
-make test          # unit tests (no cgo, no PAM headers needed)
+make test          # unit tests (pure Go, no PAM headers needed)
 make lint          # golangci-lint (config in .golangci.yml)
-make so check-so   # build the module (Docker fallback) and check exported symbols
-make vet-pam       # type-check the cgo package
-make integration   # pamtester scenarios in a Debian container against a mock provider
+make so helper check-so   # build the C module (Docker fallback) and the Go helper; check exported symbols
+make integration          # pamtester scenarios in a Debian container against a mock provider
+make integration-sshd     # the same through a real OpenSSH server and client (fork model)
 make package VERSION=0.1.0 ARCH=amd64
 ```
 
-Layout: `internal/config` (YAML), `internal/oidc` (discovery, device flow,
-ID token verification, on `coreos/go-oidc` + `golang.org/x/oauth2`),
-`internal/auth` (the decision logic, testable without PAM),
-`internal/pamlog` / `internal/pammap` (audit line, PAM code mapping),
-`cmd/pam_oidc_device` (the cgo glue, build tag `pam`),
-`internal/testprovider` + `cmd/mock-provider` (an in-memory provider for
-tests), `test/integration` (pamtester scenarios: approved, denied, wrong
-group, unmapped user under two stack controls, account stack ignore, provider
-down), `packaging` (nfpm).
+Layout: `pam/pam_oidc_device.c` (the PAM module: exec the helper, relay the
+line protocol), `cmd/pam-oidc-device-helper` (the helper process),
+`internal/config` (YAML), `internal/oidc` (discovery, device flow, ID token
+verification, on `coreos/go-oidc` + `golang.org/x/oauth2`), `internal/auth`
+(the decision logic, testable without PAM), `internal/pamlog` (audit line,
+sanitising), `internal/testprovider` + `cmd/mock-provider` (an in-memory
+provider for tests), `test/integration` (pamtester scenarios: approved,
+denied, wrong group, unmapped user under two stack controls, account stack
+ignore, provider down; and the same against a real `sshd`), `packaging`
+(nfpm).
 
 Contributions are welcome. Please keep the module provider-agnostic, add a
 test for every behaviour change, and run `make test lint integration` before

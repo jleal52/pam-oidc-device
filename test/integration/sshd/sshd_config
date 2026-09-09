@@ -1,0 +1,12 @@
+Port 2222
+ListenAddress 127.0.0.1
+UsePAM yes
+KbdInteractiveAuthentication yes
+PasswordAuthentication no
+PermitRootLogin no
+LoginGraceTime 60
+LogLevel DEBUG1
+
+Match User systems
+    AuthenticationMethods keyboard-interactive:pam
+    PubkeyAuthentication no

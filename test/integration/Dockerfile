@@ -22,6 +22,7 @@ COPY test/integration/pam.d-test        /etc/pam.d/oidc-test
 COPY test/integration/pam.d-test-ignore /etc/pam.d/oidc-test-ignore
 COPY test/integration/pam.d-test-acct   /etc/pam.d/oidc-test-acct
 COPY test/integration/config.yaml       /etc/pam_oidc_device.yaml
+COPY build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
 COPY build/mock-provider                /usr/local/bin/mock-provider
 COPY test/integration/run.sh            /run.sh
 

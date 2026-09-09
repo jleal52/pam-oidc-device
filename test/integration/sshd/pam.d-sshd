@@ -1,0 +1,5 @@
+# Test PAM stack for sshd: the module first, unmapped users fall through.
+auth     [success=done ignore=ignore default=die]  pam_oidc_device.so debug
+auth     required   pam_deny.so
+account  required   pam_permit.so
+session  required   pam_permit.so

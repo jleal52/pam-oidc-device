@@ -44,7 +44,7 @@ jobs:
       - name: Unit tests
         run: go test ./... -count=1
       - name: Build the module and check exported symbols
-        run: make so-native check-so
+        run: make so-native helper check-so
       - name: Package (deb + rpm)
         run: make package VERSION="${GITHUB_REF_NAME#v}" ARCH=${{ matrix.arch }}
       - name: Stage artifacts

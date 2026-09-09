@@ -1,17 +1,18 @@
 # pam-oidc-device build entry points.
 #
-# The PAM module (cmd/pam_oidc_device) is a cgo package behind the "pam"
-# build tag because it needs <security/pam_modules.h> (libpam0g-dev). Plain
-# `go test ./...`, `go vet ./...` and `golangci-lint run ./...` therefore
-# never touch it; `make so` builds it natively when the headers are present
-# and inside Docker otherwise. `make lint-pam` / `make vet-pam` type-check
-# the cgo package (they need the headers, so they also fall back to Docker).
+# The PAM module (pam/pam_oidc_device.c) is plain C and needs
+# <security/pam_modules.h> (libpam0g-dev) plus a C compiler; the helper it
+# execs (cmd/pam-oidc-device-helper) is a static Go binary. `make so` builds
+# the module natively when the headers are present and inside Docker
+# otherwise; `go test ./...` never needs the headers.
 
 GO          ?= go
-GOFLAGS_SO  ?= -trimpath -buildvcs=false -ldflags='-s -w'
-PAM_TAGS    ?= pam
+GOFLAGS_BIN ?= -trimpath -buildvcs=false -ldflags='-s -w'
+CC          ?= cc
+CFLAGS_SO   ?= -O2 -Wall -Wextra -Werror -fPIC -shared -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wl,-z,relro,-z,now
 BUILD_DIR   ?= build
 SO          ?= $(BUILD_DIR)/pam_oidc_device.so
+HELPER      ?= $(BUILD_DIR)/pam-oidc-device-helper
 PAM_HEADER  ?= /usr/include/security/pam_modules.h
 DOCKER_IMG  ?= golang:1.26-bookworm
 GOMOD_CACHE ?= pam-oidc-device-gomod
@@ -31,7 +32,7 @@ docker run --rm \
 	$(DOCKER_IMG) sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends libpam0g-dev >/dev/null && $(1); rc=$$?; chown -R "$$HOST_UID:$$HOST_GID" $(BUILD_DIR) 2>/dev/null; exit $$rc'
 endef
 
-.PHONY: test lint vet so so-native check-so vet-pam package integration mock-provider clean
+.PHONY: test lint vet so so-native helper check-so package integration integration-sshd mock-provider clean
 
 test:
 	$(GO) test ./...
@@ -42,17 +43,14 @@ lint:
 vet:
 	$(GO) vet ./...
 
-# Type-checks the cgo package; needs the PAM headers.
-vet-pam:
-	@if [ -f $(PAM_HEADER) ]; then \
-		$(GO) vet -tags $(PAM_TAGS) ./cmd/...; \
-	else \
-		$(call docker_run,go vet -tags $(PAM_TAGS) ./cmd/...); \
-	fi
-
 so-native:
 	mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=1 $(GO) build -buildmode=c-shared -tags $(PAM_TAGS) $(GOFLAGS_SO) -o $(SO) ./cmd/pam_oidc_device
+	$(CC) $(CFLAGS_SO) -o $(SO) pam/pam_oidc_device.c -lpam
+
+# Static helper binary exec'ed by the module for every login.
+helper:
+	mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS_BIN) -o $(HELPER) ./cmd/pam-oidc-device-helper
 
 so:
 	@if [ -f $(PAM_HEADER) ]; then \
@@ -94,7 +92,7 @@ docker run --rm \
 	$(NFPM_IMG) package -f packaging/nfpm.yaml -p $(1) -t $(DIST_DIR)/
 endef
 
-package: so
+package: so helper
 	@test -n "$(MULTIARCH)" || { echo "package: unsupported ARCH=$(ARCH) (amd64 or arm64)" >&2; exit 1; }
 	@m="$$(od -An -tx1 -j18 -N2 $(SO) | tr -d ' \n')"; \
 	test "$$m" = "$(ELF_MACHINE_$(ARCH))" || { echo "package: $(SO) is not a $(ARCH) binary (ELF e_machine $$m)" >&2; exit 1; }
@@ -106,11 +104,18 @@ package: so
 # the pamtester scenarios in a stock Debian container (test/integration/run.sh).
 IT_IMG ?= pam-oidc-device-it
 mock-provider:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags='-s -w' -o $(BUILD_DIR)/mock-provider ./cmd/mock-provider
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS_BIN) -o $(BUILD_DIR)/mock-provider ./cmd/mock-provider
 
-integration: so mock-provider
+integration: so helper mock-provider
 	docker build -q -f test/integration/Dockerfile -t $(IT_IMG) .
 	docker run --rm $(IT_IMG)
+
+# Same scenarios through a real OpenSSH server (privilege separation, fork
+# model) and the OpenSSH client with keyboard-interactive only.
+IT_SSHD_IMG ?= pam-oidc-device-sshd
+integration-sshd: so helper mock-provider
+	docker build -q -f test/integration/Dockerfile.sshd -t $(IT_SSHD_IMG) .
+	docker run --rm $(IT_SSHD_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)

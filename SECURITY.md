@@ -37,7 +37,7 @@ See the "Security notes" section of the README for details. In short:
   are checked; the required group must match exactly.
 - `https://` is required for the issuer and all discovered endpoints;
   redirects are refused; the system CA store is used.
-- Every non-success path fails closed, including a panic guard at the cgo
+- Every non-success path fails closed, including a panic guard in the helper and a strict line protocol at the module
   boundary; the account stack callback returns `PAM_IGNORE`.
 - Provider-controlled strings are sanitised before reaching the terminal or
   syslog; session values with control characters deny the login.

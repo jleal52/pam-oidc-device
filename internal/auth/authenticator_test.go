@@ -60,8 +60,8 @@ func (f *fakeFlow) VerifyIDToken(ctx context.Context, raw, usernameClaim, groups
 	return f.verify(ctx, raw, usernameClaim, groupsClaim, skew)
 }
 
-// recordingPrompter records every Info line; err, when set, is returned
-// from each call.
+// recordingPrompter records every Info and Prompt line (prompts prefixed
+// with "? "); err, when set, is returned from each call.
 type recordingPrompter struct {
 	lines []string
 	err   error
@@ -69,6 +69,11 @@ type recordingPrompter struct {
 
 func (p *recordingPrompter) Info(msg string) error {
 	p.lines = append(p.lines, msg)
+	return p.err
+}
+
+func (p *recordingPrompter) Prompt(msg string) error {
+	p.lines = append(p.lines, "? "+msg)
 	return p.err
 }
 
@@ -122,7 +127,7 @@ func happyFlow() *fakeFlow {
 var expectedPromptLines = []string{
 	"Open the following URL in a browser and approve this login:",
 	"  https://idp.example.com/device?user_code=ABCD-EFGH",
-	"Code: ABCD-EFGH",
+	"? Code: ABCD-EFGH. Press Enter after approving in the browser: ",
 }
 
 func newAuthenticator(t *testing.T, flow auth.Flow, prompt auth.Prompter) *auth.Authenticator {
@@ -229,7 +234,7 @@ func TestPromptFallsBackToVerificationURI(t *testing.T) {
 	assertLines(t, prompt.lines, []string{
 		"Open the following URL in a browser and approve this login:",
 		"  https://idp.example.com/device",
-		"Code: ABCD-EFGH",
+		"? Code: ABCD-EFGH. Press Enter after approving in the browser: ",
 	})
 }
 
