@@ -53,8 +53,7 @@ the provider advertises support for it (`ssh_device_confirmation_supported`
 in discovery), so an older provider keeps working unchanged. See
 [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md) §6.1.
 
-Status: 0.2.0 — device flow and key-based login. PIN confirmation is on `main`
-and ships in the next release.
+Status: 0.3.0 — device flow, key-based login and PIN confirmation.
 Tested against an in-house OpenID Connect provider, on Debian 12 and Fedora 41,
 amd64 and arm64.
 
@@ -162,21 +161,21 @@ to the behaviour it had before they existed.
 Releases ship `.deb` (amd64, arm64; depends on `libpam0g`) and `.rpm`
 (x86_64, aarch64; depends on `pam`) packages, the raw shared object,
 `SHA256SUMS`, and a keyless [cosign](https://github.com/sigstore/cosign)
-signature (`.sig` + `.pem`) for every file. From the release after 0.2.0 they
+signature (`.sig` + `.pem`) for every file. From 0.3.0 on they
 also carry an SPDX SBOM: the action that was supposed to produce it silently
 ignored the inputs it was given, so 0.1.0 through 0.2.0 shipped without one.
 Verify before installing:
 
 ```sh
 cosign verify-blob \
-  --certificate pam-oidc-device_0.2.0_amd64.deb.pem \
-  --signature   pam-oidc-device_0.2.0_amd64.deb.sig \
+  --certificate pam-oidc-device_0.3.0_amd64.deb.pem \
+  --signature   pam-oidc-device_0.3.0_amd64.deb.sig \
   --certificate-identity-regexp 'https://github.com/jleal52/pam-oidc-device/.github/workflows/release.yml@refs/tags/v.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  pam-oidc-device_0.2.0_amd64.deb
+  pam-oidc-device_0.3.0_amd64.deb
 
-sudo apt-get install ./pam-oidc-device_0.2.0_amd64.deb   # Debian/Ubuntu
-sudo dnf install ./pam-oidc-device-0.2.0-1.x86_64.rpm    # Fedora/RHEL
+sudo apt-get install ./pam-oidc-device_0.3.0_amd64.deb   # Debian/Ubuntu
+sudo dnf install ./pam-oidc-device-0.3.0-1.x86_64.rpm    # Fedora/RHEL
 ```
 
 Do not use 0.1.0: it does not load on Debian 12 (it needs a glibc symbol that
@@ -199,7 +198,7 @@ make so helper   # build/pam_oidc_device.so (C; Docker if libpam0g-dev is missin
 make check-so    # the three pam_sm_* symbols must be exported
 sudo install -m 0644 build/pam_oidc_device.so /usr/lib/$(gcc -print-multiarch)/security/
 sudo install -D -m 0755 build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
-make package VERSION=0.2.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
+make package VERSION=0.3.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
 ```
 
 Requirements: Go 1.26, a C compiler and `libpam0g-dev` (or Docker).
@@ -461,7 +460,7 @@ make lint          # golangci-lint (config in .golangci.yml)
 make so helper oidc-ssh check-so   # the C module (Docker fallback), the Go helper and the oidc-ssh binary; check exported symbols
 make integration          # pamtester scenarios in a Debian container against a mock provider
 make integration-sshd     # the same through a real OpenSSH server and client (fork model)
-make package VERSION=0.2.0 ARCH=amd64
+make package VERSION=0.3.0 ARCH=amd64
 ```
 
 Layout: `pam/pam_oidc_device.c` (the PAM module: exec the helper, relay the
