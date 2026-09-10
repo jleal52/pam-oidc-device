@@ -27,7 +27,34 @@ Enter, and the SSH session continues (pressing Enter early is fine: the module
 keeps polling until the approval arrives or the time runs out). Their identity is exported to the session as
 `OIDC_USER` and written to syslog, so a shared account stays attributable.
 
-Status: 0.2.0 — device flow and key-based login.
+### Confirming with a PIN
+
+A provider may instead show a PIN once the login is approved and expect it
+back at the terminal:
+
+```
+$ ssh systems@bastion
+Open the following URL in a browser and approve this login:
+  https://login.example.com/device?user_code=BCDF-GHJK
+Code: BCDF-GHJK. Approve in the browser, then type the PIN it shows:
+```
+
+This closes a hole the plain flow leaves open. The verification link carries
+the `user_code`, so approving is one click, and nothing proves the person
+approving is the person at the terminal: whoever starts the login can pass
+their own link to someone with access and have that person approve the
+attacker's session. Carrying a secret back the other way — browser to
+terminal — makes an approval worthless to anyone who is not sitting at the
+terminal.
+
+There is **one attempt**: a wrong PIN voids the login, because the person
+typing it is precisely who this defends against. The module only asks when
+the provider advertises support for it (`ssh_device_confirmation_supported`
+in discovery), so an older provider keeps working unchanged. See
+[docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md) §6.1.
+
+Status: 0.2.0 — device flow and key-based login. PIN confirmation is on `main`
+and ships in the next release.
 Tested against an in-house OpenID Connect provider, on Debian 12 and Fedora 41,
 amd64 and arm64.
 
