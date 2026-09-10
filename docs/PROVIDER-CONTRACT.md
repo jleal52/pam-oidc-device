@@ -188,7 +188,8 @@ The OpenID configuration document at
 `{issuer}/.well-known/openid-configuration` MAY carry
 
 ```json
-"ssh_access_endpoint": "https://login.example.com/api/ssh"
+"ssh_access_endpoint": "https://login.example.com/api/ssh",
+"ssh_device_confirmation_supported": true
 ```
 
 A host resolves `{base}` in this order: its configured `api_base`, then
@@ -196,6 +197,11 @@ A host resolves `{base}` in this order: its configured `api_base`, then
 be an absolute `https://` URL without query or fragment; it is used verbatim
 as the `aud` of host assertions, so provider and host MUST agree on it byte
 for byte (trailing slash included).
+
+`ssh_device_confirmation_supported` announces the confirmation PIN of §6.1. A
+host MUST read it **before** asking for a device code and MUST NOT ask the
+user for a PIN unless it is `true`: prompting for a number no page will ever
+show turns a working login into a dead end.
 
 ## 6. Device flow extensions
 
@@ -212,6 +218,7 @@ optional. A provider that does not understand them MUST ignore them (RFC 6749
 | `account` | The local account the person is logging in to. |
 | `intent` | `login` (default) or `enroll`. |
 | `groups` | Only with `intent=enroll`: the host group codes the host is asking to join, comma-separated, in the order they will appear in the enrolment body. Omitted when the host claims none. |
+| `confirmation_supported` | `true` when the host will ask the user for the confirmation PIN of §6.1 and send it back. A host MUST NOT send it unless discovery advertises `ssh_device_confirmation_supported`. |
 
 With a valid `host_assertion` the provider knows which enrolled host is
 asking and for which account. It SHOULD show the enrolled `name` of the host
@@ -237,6 +244,50 @@ takes the parameter into account SHOULD compare it with the `groups` of the
 enrolment body and refuse a mismatch; a host therefore MUST send both lists
 with the same codes in the same order, trimmed, lowercased and without
 repeats.
+
+### 6.1 Confirmation PIN
+
+The `user_code` proves nothing about who approves. A device flow prints a
+verification URI that usually embeds it, so approving is one click, and an
+attacker who starts the flow can simply pass their own link to someone with
+access: that person sees an ordinary-looking approval and grants the
+attacker's session.
+
+The PIN closes that by carrying a secret **the other way**, from the browser
+to the terminal:
+
+1. The host sends `confirmation_supported=true` (only if discovery advertises
+   support).
+2. On approval — never before — the provider generates a PIN, shows it on the
+   result page and remembers it with the device code.
+3. The user types it at the terminal, and the host sends it as
+   `user_confirmation` in the token request (RFC 8628 §3.4).
+
+Requirements for a provider that implements it:
+
+- The PIN MUST NOT appear anywhere before the approval, or anyone who opens
+  the link has it without approving.
+- A wrong PIN MUST invalidate the device code. There is **no retry**: the
+  person at the terminal is exactly who this defends against, and with retries
+  they enumerate the whole space.
+- The PIN SHOULD be at least 4 digits, generated with a cryptographic random
+  source, and compared in constant time.
+- A confirmation window SHOULD bound how long an approval stays usable
+  (2 minutes is a reasonable default). **Expiry MUST be checked before the
+  PIN**: otherwise a correct PIN out of time and a wrong one give different
+  errors, which tells an attacker whether the PIN was right.
+- A token request with no `user_confirmation` for a code awaiting one MUST
+  answer `authorization_pending` and MUST NOT consume the code.
+- A rejected PIN is reported as `access_denied`, like any other refusal.
+
+Note what this does not do: if the user reads the PIN out to whoever asks,
+it falls. What it buys is turning "click this link" into "have a phone
+conversation", which is far more expensive to mount and far more likely to
+raise suspicion.
+
+The same applies to `intent=enroll`, where it matters more: enrolment picks
+the host groups, and those groups decide who may log in to that machine from
+then on.
 
 ## 7. Security considerations
 

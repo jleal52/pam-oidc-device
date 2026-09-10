@@ -1,6 +1,7 @@
 package sshcmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -204,6 +205,13 @@ func discover(ctx context.Context, cfg *config.Config) (*oidc.Client, error) {
 // a host and issues the token accordingly.
 func authorizeEnrolment(ctx context.Context, env *Env, cfg *config.Config, client *oidc.Client, name string, groups []string) (string, error) {
 	extra := map[string]string{"intent": intentEnroll}
+	// Enrolar elige los grupos, y los grupos deciden quién entrará después en
+	// esta máquina: es la aprobación de más valor de todo el sistema, así que
+	// se confirma con PIN siempre que el proveedor sepa hacerlo.
+	confirm := client.SSH().ConfirmationSupported
+	if confirm {
+		extra["confirmation_supported"] = "true"
+	}
 	if len(groups) > 0 {
 		// An unsigned hint, like device_name: the host has no identity the
 		// provider knows yet. It exists so that the approval page can show
@@ -224,11 +232,18 @@ func authorizeEnrolment(ctx context.Context, env *Env, cfg *config.Config, clien
 	} else {
 		env.printf("Open %s and enter the code %s to approve the enrolment of %q.\n", da.VerificationURI, da.UserCode, name)
 	}
-	env.printf("Waiting for approval...\n")
+	pin := ""
+	if confirm {
+		if pin, err = askPin(env); err != nil {
+			return "", err
+		}
+	} else {
+		env.printf("Waiting for approval...\n")
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	tok, err := client.WaitForToken(ctx, da)
+	tok, err := client.WaitForToken(ctx, da, pin)
 	if err != nil {
 		return "", fmt.Errorf("oidc-ssh: %w", err)
 	}
@@ -236,6 +251,22 @@ func authorizeEnrolment(ctx context.Context, env *Env, cfg *config.Config, clien
 		return "", errors.New("oidc-ssh: the provider issued no access token")
 	}
 	return tok.AccessToken, nil
+}
+
+// askPin reads the confirmation PIN the approval page shows. Blocking here is
+// the point: with confirmation on there is nothing to poll for until the
+// operator has approved and read the number off the screen.
+func askPin(env *Env) (string, error) {
+	env.printf("Approve in the browser, then type the PIN it shows: ")
+	line, err := bufio.NewReader(env.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("oidc-ssh: no confirmation PIN given: %w", err)
+	}
+	pin := strings.TrimSpace(line)
+	if pin == "" {
+		return "", errors.New("oidc-ssh: no confirmation PIN given")
+	}
+	return pin, nil
 }
 
 // loadOrCreateIdentity returns the host key pair at path, generating it (and
@@ -346,13 +377,7 @@ func commandPath(env *Env) string {
 // sshAccessEndpoint returns the ssh_access_endpoint the provider advertises
 // in its discovery document, or "" when it advertises none.
 func sshAccessEndpoint(client *oidc.Client) string {
-	var meta struct {
-		SSHAccessEndpoint string `json:"ssh_access_endpoint"`
-	}
-	if err := client.Metadata(&meta); err != nil {
-		return ""
-	}
-	return meta.SSHAccessEndpoint
+	return client.SSH().AccessEndpoint
 }
 
 // configuredAccounts returns the local accounts the configuration maps to a

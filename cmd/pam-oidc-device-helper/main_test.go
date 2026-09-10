@@ -36,7 +36,7 @@ func TestDeviceAuthParamsWithoutHostID(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Issuer: "https://idp.example", IdentityKey: "/does/not/exist"}
 
-	extra, err := deviceAuthParams(cfg, "systems", "")
+	extra, err := deviceAuthParams(cfg, "systems", "", false)
 	if err != nil {
 		t.Fatalf("deviceAuthParams: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestDeviceAuthParamsSignsAssertion(t *testing.T) {
 		IdentityKey: keyPath,
 	}
 
-	extra, err := deviceAuthParams(cfg, "systems", "https://ignored.example/api/ssh")
+	extra, err := deviceAuthParams(cfg, "systems", "https://ignored.example/api/ssh", false)
 	if err != nil {
 		t.Fatalf("deviceAuthParams: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestDeviceAuthParamsFallsBackToDiscoveryAndIssuer(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := *base
-			extra, err := deviceAuthParams(&cfg, "systems", tc.discovery)
+			extra, err := deviceAuthParams(&cfg, "systems", tc.discovery, false)
 			if err != nil {
 				t.Fatalf("deviceAuthParams: %v", err)
 			}
@@ -110,7 +110,7 @@ func TestDeviceAuthParamsMissingKey(t *testing.T) {
 		IdentityKey: filepath.Join(t.TempDir(), "absent.key"),
 	}
 
-	if _, err := deviceAuthParams(cfg, "systems", ""); err == nil {
+	if _, err := deviceAuthParams(cfg, "systems", "", false); err == nil {
 		t.Fatal("deviceAuthParams: got nil error for a missing key file")
 	}
 }
@@ -277,5 +277,39 @@ users:
 	}
 	if got := p.LastHostAssertion(); got != "" {
 		t.Errorf("host_assertion = %q, want none", got)
+	}
+}
+
+func TestDeviceAuthParamsAnnouncesConfirmationOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
+	id, keyPath := newIdentity(t)
+	_ = id
+	cfg := &config.Config{
+		Issuer:      "https://idp.example",
+		IdentityKey: keyPath,
+		HostID:      "host-1",
+		APIBase:     "https://idp.example/api/ssh",
+	}
+
+	off, err := deviceAuthParams(cfg, "systems", "", false)
+	if err != nil {
+		t.Fatalf("deviceAuthParams: %v", err)
+	}
+	if _, ok := off["confirmation_supported"]; ok {
+		// Anunciarlo contra un proveedor que no lo entiende no rompe nada,
+		// pero anunciarlo cuando el propio módulo no va a preguntar el PIN
+		// sí: el proveedor lo generaría y nadie lo pediría.
+		t.Errorf("se anunció confirmation_supported sin pedirlo: %v", off)
+	}
+
+	on, err := deviceAuthParams(cfg, "systems", "", true)
+	if err != nil {
+		t.Fatalf("deviceAuthParams: %v", err)
+	}
+	if on["confirmation_supported"] != "true" {
+		t.Errorf("confirmation_supported = %q, quiero \"true\"", on["confirmation_supported"])
+	}
+	if on["host_assertion"] == "" || on["account"] != "systems" {
+		t.Errorf("el resto del contrato se perdió: %v", on)
 	}
 }

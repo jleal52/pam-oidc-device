@@ -239,7 +239,7 @@ func TestWaitForTokenAfterPending(t *testing.T) {
 	c := newClient(t, p)
 	da := startFlow(t, c, "h")
 
-	tok, err := c.WaitForToken(context.Background(), da)
+	tok, err := c.WaitForToken(context.Background(), da, "")
 	if err != nil {
 		t.Fatalf("WaitForToken: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestWaitForTokenHonoursSlowDown(t *testing.T) {
 	da := startFlow(t, c, "h")
 
 	start := time.Now()
-	tok, err := c.WaitForToken(context.Background(), da)
+	tok, err := c.WaitForToken(context.Background(), da, "")
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("WaitForToken: %v", err)
@@ -290,7 +290,7 @@ func TestWaitForTokenDenied(t *testing.T) {
 	c := newClient(t, p)
 	da := startFlow(t, c, "h")
 
-	_, err := c.WaitForToken(context.Background(), da)
+	_, err := c.WaitForToken(context.Background(), da, "")
 	if !errors.Is(err, oidc.ErrAccessDenied) {
 		t.Fatalf("err = %v, want ErrAccessDenied", err)
 	}
@@ -302,7 +302,7 @@ func TestWaitForTokenExpired(t *testing.T) {
 	c := newClient(t, p)
 	da := startFlow(t, c, "h")
 
-	_, err := c.WaitForToken(context.Background(), da)
+	_, err := c.WaitForToken(context.Background(), da, "")
 	if !errors.Is(err, oidc.ErrExpired) {
 		t.Fatalf("err = %v, want ErrExpired", err)
 	}
@@ -316,7 +316,7 @@ func TestWaitForTokenContextTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	_, err := c.WaitForToken(ctx, da)
+	_, err := c.WaitForToken(ctx, da, "")
 	if !errors.Is(err, oidc.ErrTimeout) {
 		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
@@ -330,7 +330,7 @@ func TestWaitForTokenContextCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := c.WaitForToken(ctx, da)
+	_, err := c.WaitForToken(ctx, da, "")
 	if !errors.Is(err, oidc.ErrTimeout) {
 		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
@@ -383,7 +383,7 @@ func TestVerifyIDTokenFromFlow(t *testing.T) {
 	}))
 	c := newClient(t, p)
 	da := startFlow(t, c, "h")
-	tok, err := c.WaitForToken(context.Background(), da)
+	tok, err := c.WaitForToken(context.Background(), da, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +564,7 @@ func TestWaitForTokenNegativeIntervalDoesNotPanic(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	_, err := c.WaitForToken(ctx, da)
+	_, err := c.WaitForToken(ctx, da, "")
 	if !errors.Is(err, oidc.ErrTimeout) {
 		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
@@ -858,7 +858,7 @@ func TestWaitForTokenSanitizesProviderError(t *testing.T) {
 	srv, _ := stubIssuer(t, false, nil, nil, oauthErrorHandler("access_denied", nastyDescription))
 	c := newStubClient(t, srv)
 	da := startFlow(t, c, "h")
-	_, err := c.WaitForToken(context.Background(), da)
+	_, err := c.WaitForToken(context.Background(), da, "")
 	assertSanitized(t, err, "400", "access_denied")
 	if !errors.Is(err, oidc.ErrAccessDenied) {
 		t.Errorf("err = %v, want ErrAccessDenied to survive sanitization", err)
@@ -874,7 +874,7 @@ func TestWaitForTokenNeverEchoesRawBody(t *testing.T) {
 	})
 	c := newStubClient(t, srv)
 	da := startFlow(t, c, "h")
-	_, err := c.WaitForToken(context.Background(), da)
+	_, err := c.WaitForToken(context.Background(), da, "")
 	if err == nil {
 		t.Fatal("expected an error")
 	}

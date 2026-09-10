@@ -255,6 +255,31 @@ func checkParamName(name string) error {
 	return nil
 }
 
+// SSHMetadata is the part of the discovery document this project adds to the
+// standard OpenID Connect one. Zero values mean "the provider advertises
+// nothing", which is what an older provider looks like.
+type SSHMetadata struct {
+	// AccessEndpoint is the base of the SSH access API: where to enrol,
+	// where to ask for authorized keys, and the `aud` a host assertion has
+	// to be signed for.
+	AccessEndpoint string `json:"ssh_access_endpoint"`
+	// ConfirmationSupported says the provider shows a confirmation PIN
+	// after approving an SSH device flow and expects it back in the token
+	// request. Read it BEFORE asking for a device code: asking a user for a
+	// PIN that no page will ever show turns a working login into a dead end.
+	ConfirmationSupported bool `json:"ssh_device_confirmation_supported"`
+}
+
+// SSH returns the provider's SSH metadata. The discovery document was already
+// fetched by New, so this costs no request.
+func (c *Client) SSH() SSHMetadata {
+	var meta SSHMetadata
+	if err := c.Metadata(&meta); err != nil {
+		return SSHMetadata{}
+	}
+	return meta
+}
+
 // Metadata decodes the provider's discovery document into v, which must be
 // a pointer to a struct with the JSON tags of the fields wanted. It gives
 // access to metadata beyond the standard endpoints — the contract's
@@ -269,17 +294,26 @@ func (c *Client) Metadata(v any) error {
 
 // WaitForToken polls the token endpoint (RFC 8628 §3.4) until the user
 // completes or rejects the authorization, the device code expires, or ctx
-// is done. The provider's interval and slow_down hints are honoured, with
+// is done. A non-empty confirmation is sent as `user_confirmation`: the PIN
+// the approval page showed, which the provider checks once and only once. The provider's interval and slow_down hints are honoured, with
 // the interval clamped to [1, 60] seconds (a missing or non-positive value
 // becomes the RFC default of 5).
-func (c *Client) WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
+func (c *Client) WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse, confirmation string) (*oauth2.Token, error) {
 	if da == nil {
 		return nil, errors.New("oidc: nil device authorization response")
 	}
 	polled := *da
 	polled.Interval = clampInterval(da.Interval)
 
-	tok, err := c.oauth.DeviceAccessToken(c.oauthContext(ctx), &polled)
+	// El PIN de confirmación viaja como parámetro del canje. Cuando se manda,
+	// el proveedor no responde `authorization_pending`, así que en la práctica
+	// esto es una sola petición y no un sondeo.
+	var opts []oauth2.AuthCodeOption
+	if confirmation != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("user_confirmation", confirmation))
+	}
+
+	tok, err := c.oauth.DeviceAccessToken(c.oauthContext(ctx), &polled, opts...)
 	if err == nil {
 		return tok, nil
 	}

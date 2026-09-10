@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -73,6 +74,7 @@ const (
 	ReasonInvalidToken        = "invalid_token"
 	ReasonMissingGroup        = "missing_group"
 	ReasonEmptyUsername       = "empty_username"
+	ReasonNoConfirmation      = "no_confirmation"
 )
 
 // MsgProviderUnavailable is shown when the provider cannot be reached. It
@@ -92,6 +94,17 @@ const (
 	// applications which only relay text together with a prompt (sshd)
 	// display it before the wait starts.
 	msgCodePromptFmt = "Code: %s. Press Enter after approving in the browser: "
+	// msgPinPromptFmt takes the user code. Used instead of msgCodePromptFmt
+	// when the provider confirms the login with a PIN: the answer stops
+	// being an acknowledgement and becomes the PIN the approval page shows.
+	msgPinPromptFmt = "Code: %s. Approve in the browser, then type the PIN it shows: "
+	// msgPinMissing is shown when the user answers the PIN prompt with
+	// nothing. Without a PIN there is nothing to ask the provider.
+	msgPinMissing = "No PIN given; the login cannot be completed."
+	// msgPinRejected is shown when the provider refuses the PIN. It says the
+	// attempt is over on purpose: there is no retry, and a user expecting one
+	// would wait for a second prompt that never comes.
+	msgPinRejected = "The PIN does not match, or the login was denied. This attempt is void; run ssh again."
 )
 
 // EnvSubject is the environment variable that receives the token subject.
@@ -139,13 +152,19 @@ type Prompter interface {
 	// prompt returns an error, which the authenticator ignores: polling
 	// starts right away and the approval is picked up anyway.
 	Prompt(msg string) error
+	// Ask shows a message and returns what the user typed
+	// (PAM_PROMPT_ECHO_OFF). Unlike Prompt, the answer is the point: it
+	// carries the confirmation PIN. An error here fails the login, because
+	// without the PIN there is nothing to send — carrying on regardless,
+	// which is right for Prompt, would be wrong here.
+	Ask(msg string) (string, error)
 }
 
 // Flow is the subset of the OIDC client driven by the Authenticator. It is
 // satisfied by *oidc.Client.
 type Flow interface {
 	StartDeviceAuth(ctx context.Context, deviceName string, extra map[string]string) (*oauth2.DeviceAuthResponse, error)
-	WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
+	WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse, confirmation string) (*oauth2.Token, error)
 	VerifyIDToken(ctx context.Context, raw, usernameClaim, groupsClaim string, skew time.Duration) (*oidc.Identity, error)
 }
 
@@ -158,6 +177,7 @@ type Authenticator struct {
 	prompt      Prompter
 	now         func() time.Time
 	deviceExtra map[string]string
+	confirm     bool
 }
 
 // New returns an Authenticator using cfg, flow and prompt.
@@ -172,6 +192,16 @@ func New(cfg *config.Config, flow Flow, prompt Prompter) *Authenticator {
 // forwards them.
 func (a *Authenticator) WithDeviceAuthParams(extra map[string]string) *Authenticator {
 	a.deviceExtra = extra
+	return a
+}
+
+// WithConfirmation switches the login to the PIN flow: the approval page
+// shows a PIN and this asks for it instead of a bare acknowledgement, then
+// sends it with the token request. It is the caller's job to decide, from
+// the provider's metadata, whether the provider supports it — asking for a
+// PIN nobody will show turns a working login into a dead end.
+func (a *Authenticator) WithConfirmation(on bool) *Authenticator {
+	a.confirm = on
 	return a
 }
 
@@ -199,9 +229,15 @@ func (a *Authenticator) Authenticate(ctx context.Context, localUser string) Resu
 		a.info(msgExpired)
 		return a.fail(res, AuthErr, ReasonExpired, fmt.Errorf("device code expired at %s before polling started: %w", da.Expiry.UTC().Format(time.RFC3339), oidc.ErrExpired))
 	}
-	a.showInstructions(da)
+	pin, err := a.askApproval(da)
+	if err != nil {
+		// Sin PIN no hay nada que canjear. Decirlo es mejor que quedarse
+		// esperando a un prompt que ya no va a llegar.
+		a.info(msgPinMissing)
+		return a.fail(res, AuthErr, ReasonNoConfirmation, err)
+	}
 
-	tok, err := a.waitForToken(ctx, da)
+	tok, err := a.waitForToken(ctx, da, pin)
 	if err != nil {
 		return a.waitFailure(res, err)
 	}
@@ -236,19 +272,39 @@ func (a *Authenticator) Authenticate(ctx context.Context, localUser string) Resu
 	return res
 }
 
-// showInstructions prints the URL and the user code. The complete URI is
-// preferred when the provider offers one; the code is always printed so
-// the user can compare it with the approval page.
-func (a *Authenticator) showInstructions(da *oauth2.DeviceAuthResponse) {
+// askApproval prints the URL and the user code and, in the PIN flow, returns
+// what the user typed. The complete URI is preferred when the provider offers
+// one; the code is always printed so the user can compare it with the
+// approval page.
+//
+// Outside the PIN flow a broken conversation is not fatal: polling starts
+// anyway and picks the approval up. Inside it, it is: there is no PIN to
+// send, so the login cannot succeed and saying so beats hanging.
+func (a *Authenticator) askApproval(da *oauth2.DeviceAuthResponse) (string, error) {
 	uri := da.VerificationURIComplete
 	if uri == "" {
 		uri = da.VerificationURI
 	}
 	a.info(msgOpenURL)
 	a.info("  " + uri)
-	if a.prompt != nil {
-		_ = a.prompt.Prompt(fmt.Sprintf(msgCodePromptFmt, da.UserCode))
+
+	if !a.confirm {
+		if a.prompt != nil {
+			_ = a.prompt.Prompt(fmt.Sprintf(msgCodePromptFmt, da.UserCode))
+		}
+		return "", nil
 	}
+	if a.prompt == nil {
+		return "", errors.New("no conversation available to ask for the PIN")
+	}
+	pin, err := a.prompt.Ask(fmt.Sprintf(msgPinPromptFmt, da.UserCode))
+	if err != nil {
+		return "", fmt.Errorf("ask for the confirmation PIN: %w", err)
+	}
+	if pin = strings.TrimSpace(pin); pin == "" {
+		return "", errors.New("no confirmation PIN given")
+	}
+	return pin, nil
 }
 
 // expired reports whether the device code lifetime, when the provider
@@ -260,7 +316,7 @@ func (a *Authenticator) expired(da *oauth2.DeviceAuthResponse) bool {
 // waitForToken polls for the token with a deadline bounded by the
 // configured timeout and by the device code lifetime, whichever is
 // shorter.
-func (a *Authenticator) waitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
+func (a *Authenticator) waitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse, confirmation string) (*oauth2.Token, error) {
 	wait := a.cfg.Timeout
 	if !da.Expiry.IsZero() {
 		if remaining := da.Expiry.Sub(a.now()); remaining < wait {
@@ -269,7 +325,7 @@ func (a *Authenticator) waitForToken(ctx context.Context, da *oauth2.DeviceAuthR
 	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	return a.flow.WaitForToken(ctx, da)
+	return a.flow.WaitForToken(ctx, da, confirmation)
 }
 
 // waitFailure maps a WaitForToken error to a Result and tells the user
@@ -277,7 +333,15 @@ func (a *Authenticator) waitForToken(ctx context.Context, da *oauth2.DeviceAuthR
 func (a *Authenticator) waitFailure(res Result, err error) Result {
 	switch {
 	case errors.Is(err, oidc.ErrAccessDenied):
-		a.info(msgDenied)
+		// En el flujo con PIN, `access_denied` cubre dos cosas que el
+		// proveedor no distingue por código: el PIN no coincide, o la
+		// aprobación se denegó. El mensaje dice las dos, y en ambas lo que
+		// toca es lo mismo: volver a empezar.
+		if a.confirm {
+			a.info(msgPinRejected)
+		} else {
+			a.info(msgDenied)
+		}
 		return a.fail(res, AuthErr, ReasonDenied, err)
 	case errors.Is(err, oidc.ErrExpired):
 		a.info(msgExpired)

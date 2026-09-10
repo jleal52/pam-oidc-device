@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,6 +33,8 @@ type fakeFlow struct {
 	startCalls, waitCalls, verifyCalls int
 	// lastExtra is the extra parameter map of the last StartDeviceAuth call.
 	lastExtra map[string]string
+	// lastConfirmation is the PIN of the last WaitForToken call.
+	lastConfirmation string
 
 	start  func(ctx context.Context, deviceName string) (*oauth2.DeviceAuthResponse, error)
 	wait   func(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
@@ -47,8 +50,9 @@ func (f *fakeFlow) StartDeviceAuth(ctx context.Context, deviceName string, extra
 	return f.start(ctx, deviceName)
 }
 
-func (f *fakeFlow) WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
+func (f *fakeFlow) WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse, confirmation string) (*oauth2.Token, error) {
 	f.waitCalls++
+	f.lastConfirmation = confirmation
 	if f.wait == nil {
 		return nil, errors.New("fakeFlow: WaitForToken not configured")
 	}
@@ -66,8 +70,10 @@ func (f *fakeFlow) VerifyIDToken(ctx context.Context, raw, usernameClaim, groups
 // recordingPrompter records every Info and Prompt line (prompts prefixed
 // with "? "); err, when set, is returned from each call.
 type recordingPrompter struct {
-	lines []string
-	err   error
+	lines  []string
+	err    error
+	answer string
+	askErr error
 }
 
 func (p *recordingPrompter) Info(msg string) error {
@@ -78,6 +84,17 @@ func (p *recordingPrompter) Info(msg string) error {
 func (p *recordingPrompter) Prompt(msg string) error {
 	p.lines = append(p.lines, "? "+msg)
 	return p.err
+}
+
+// Ask records the question (prefixed with "?? ") and returns answer. When
+// askErr is set it is returned instead, modelling a module that cannot
+// prompt.
+func (p *recordingPrompter) Ask(msg string) (string, error) {
+	p.lines = append(p.lines, "?? "+msg)
+	if p.askErr != nil {
+		return "", p.askErr
+	}
+	return p.answer, nil
 }
 
 func newConfig(t *testing.T) *config.Config {
@@ -625,5 +642,107 @@ func TestZeroResultIsNotSuccess(t *testing.T) {
 	}
 	if got := auth.Code(0).String(); got != "unknown" {
 		t.Errorf("Code(0).String() = %q, want %q", got, "unknown")
+	}
+}
+
+// ── Confirmación con PIN ────────────────────────────────────────────────
+//
+// El PIN cierra el ataque de «apruébame este enlace»: quien aprueba en el
+// navegador no es necesariamente quien tiene el terminal, y hasta ahora nada
+// lo comprobaba. El número va de la web al terminal, así que la aprobación no
+// le sirve a quien no está delante de él.
+
+func TestAuthenticateWithConfirmationSendsThePin(t *testing.T) {
+	flow := happyFlow()
+	prompt := &recordingPrompter{answer: "4271"}
+	a := newAuthenticator(t, flow, prompt)
+	a.WithConfirmation(true)
+
+	res := a.Authenticate(context.Background(), "systems")
+
+	assertResult(t, res, auth.Success, "")
+	if flow.lastConfirmation != "4271" {
+		t.Errorf("confirmación enviada = %q, quiero %q", flow.lastConfirmation, "4271")
+	}
+	// El prompt tiene que PEDIR el PIN, no limitarse a esperar un Enter.
+	var asked bool
+	for _, l := range prompt.lines {
+		if strings.HasPrefix(l, "?? ") && strings.Contains(l, "PIN") {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Errorf("no se pidió el PIN; líneas: %q", prompt.lines)
+	}
+}
+
+func TestAuthenticateWithoutConfirmationSendsNoPin(t *testing.T) {
+	flow := happyFlow()
+	prompt := &recordingPrompter{answer: "no-debería-usarse"}
+	res := newAuthenticator(t, flow, prompt).Authenticate(context.Background(), "systems")
+
+	assertResult(t, res, auth.Success, "")
+	if flow.lastConfirmation != "" {
+		t.Errorf("confirmación = %q, quiero vacía: el camino de siempre no manda PIN", flow.lastConfirmation)
+	}
+	for _, l := range prompt.lines {
+		if strings.HasPrefix(l, "?? ") {
+			t.Errorf("se preguntó el PIN sin estar en modo confirmación: %q", l)
+		}
+	}
+}
+
+func TestAuthenticateWithConfirmationRefusesAnEmptyPin(t *testing.T) {
+	flow := happyFlow()
+	a := newAuthenticator(t, flow, &recordingPrompter{answer: "   "})
+	a.WithConfirmation(true)
+
+	res := a.Authenticate(context.Background(), "systems")
+
+	assertResult(t, res, auth.AuthErr, auth.ReasonNoConfirmation)
+	// Sin PIN no hay nada que canjear: preguntar al proveedor sería gastar
+	// una petición para que la rechace.
+	if flow.waitCalls != 0 {
+		t.Errorf("waitCalls = %d, quiero 0", flow.waitCalls)
+	}
+}
+
+func TestAuthenticateWithConfirmationFailsWhenItCannotAsk(t *testing.T) {
+	flow := happyFlow()
+	a := newAuthenticator(t, flow, &recordingPrompter{askErr: errors.New("sin conversación")})
+	a.WithConfirmation(true)
+
+	res := a.Authenticate(context.Background(), "systems")
+
+	// A diferencia de Prompt, aquí no se puede «seguir igualmente»: sin
+	// respuesta no hay PIN, y colgarse esperando sería peor que fallar.
+	assertResult(t, res, auth.AuthErr, auth.ReasonNoConfirmation)
+	if flow.waitCalls != 0 {
+		t.Errorf("waitCalls = %d, quiero 0", flow.waitCalls)
+	}
+}
+
+func TestAuthenticateWithConfirmationExplainsARejectedPin(t *testing.T) {
+	flow := happyFlow()
+	flow.wait = func(_ context.Context, _ *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
+		return nil, fmt.Errorf("%w: rechazado", oidc.ErrAccessDenied)
+	}
+	prompt := &recordingPrompter{answer: "0000"}
+	a := newAuthenticator(t, flow, prompt)
+	a.WithConfirmation(true)
+
+	res := a.Authenticate(context.Background(), "systems")
+
+	assertResult(t, res, auth.AuthErr, auth.ReasonDenied)
+	// El mensaje tiene que decir que el intento está anulado: no hay
+	// reintento, y quien espere un segundo prompt se queda mirando.
+	var told bool
+	for _, l := range prompt.lines {
+		if strings.Contains(l, "void") {
+			told = true
+		}
+	}
+	if !told {
+		t.Errorf("no se avisó de que el intento queda anulado; líneas: %q", prompt.lines)
 	}
 }

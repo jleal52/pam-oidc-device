@@ -58,6 +58,10 @@ type Env struct {
 	// Stderr receives diagnostics from enroll and status.
 	// AuthorizedKeys never writes to it.
 	Stderr io.Writer
+	// Stdin is where enroll reads the confirmation PIN from when the
+	// provider asks for one. Defaults to os.Stdin; an empty reader makes
+	// the enrolment fail rather than hang.
+	Stdin io.Reader
 	// ConfigPath is the configuration file to read; empty means the
 	// default search order (config.FindDefault).
 	ConfigPath string
@@ -79,6 +83,9 @@ func (e *Env) fill() {
 	}
 	if e.Stderr == nil {
 		e.Stderr = io.Discard
+	}
+	if e.Stdin == nil {
+		e.Stdin = os.Stdin
 	}
 	if e.Log == nil {
 		e.Log = nopLogger{}

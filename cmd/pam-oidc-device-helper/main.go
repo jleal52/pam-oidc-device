@@ -172,7 +172,12 @@ func run(out *protocol, lg *logger, configPath, user, rhost string) (code, reaso
 	// provider which enrolled host and which local account the login is
 	// for; a host that is not enrolled sends nothing extra and gets the
 	// plain flow.
-	extra, err := deviceAuthParams(cfg, user, sshAccessEndpoint(client))
+	// Confirmación con PIN: se lee del discovery ANTES de pedir el código.
+	// Solo si el proveedor lo anuncia se declara `confirmation_supported` y
+	// se prepara el prompt; así un módulo nuevo contra un proveedor viejo
+	// sigue entrando como siempre.
+	confirm := client.SSH().ConfirmationSupported
+	extra, err := deviceAuthParams(cfg, user, sshAccessEndpoint(client), confirm)
 	if err != nil {
 		// Carry on without them. The assertion only adds context to a
 		// decision the provider makes anyway, so a stale key path or an
@@ -188,7 +193,12 @@ func run(out *protocol, lg *logger, configPath, user, rhost string) (code, reaso
 
 	// The authenticator bounds its own wait (config timeout and device code
 	// lifetime); the module additionally enforces a wall-clock limit.
-	res := auth.New(cfg, client, out).WithDeviceAuthParams(extra).Authenticate(context.Background(), user)
+	// El PIN solo aplica si además se manda la assertion: es la misma
+	// condición que usa el proveedor para generarlo (flujo SSH identificado).
+	res := auth.New(cfg, client, out).
+		WithDeviceAuthParams(extra).
+		WithConfirmation(confirm && extra != nil).
+		Authenticate(context.Background(), user)
 	attempt.User, attempt.Subject = res.Username, res.Subject
 	attempt.Reason, attempt.Err = res.Reason, res.Err
 
@@ -232,7 +242,7 @@ const intentLogin = "login"
 // addressed to the API base the contract's resolution order yields, which
 // is what the provider checks the "aud" claim against — and returns it
 // alongside the account and the intent.
-func deviceAuthParams(cfg *config.Config, account, discoveryEndpoint string) (map[string]string, error) {
+func deviceAuthParams(cfg *config.Config, account, discoveryEndpoint string, confirmation bool) (map[string]string, error) {
 	if cfg.HostID == "" {
 		return nil, nil
 	}
@@ -248,24 +258,22 @@ func deviceAuthParams(cfg *config.Config, account, discoveryEndpoint string) (ma
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{
+	params := map[string]string{
 		"host_assertion": assertion,
 		"account":        account,
 		"intent":         intentLogin,
-	}, nil
+	}
+	if confirmation {
+		params["confirmation_supported"] = "true"
+	}
+	return params, nil
 }
 
 // sshAccessEndpoint returns the ssh_access_endpoint the provider advertises
 // in its discovery document, or "" when it advertises none. The document was
 // already fetched, so this costs no request.
 func sshAccessEndpoint(client *oidc.Client) string {
-	var meta struct {
-		SSHAccessEndpoint string `json:"ssh_access_endpoint"`
-	}
-	if err := client.Metadata(&meta); err != nil {
-		return ""
-	}
-	return meta.SSHAccessEndpoint
+	return client.SSH().AccessEndpoint
 }
 
 // exportEnv emits the session variables in a stable order. Names were
@@ -331,6 +339,21 @@ func (p *protocol) Prompt(msg string) error {
 		return fmt.Errorf("prompt not acknowledged: %w", err)
 	}
 	return nil
+}
+
+// Ask implements auth.Prompter: it asks the module to show msg as an
+// echo-off prompt and returns what the user typed. The module answers with
+// one line; EOF (an older module, or one that cannot prompt) is an error,
+// because without the answer there is no PIN to send.
+//
+// The answer never reaches the log: it is the confirmation PIN.
+func (p *protocol) Ask(msg string) (string, error) {
+	p.line('Q', pamlog.SanitizePrompt(msg))
+	line, err := p.r.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("prompt not answered: %w", err)
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func (p *protocol) env(name, value string) { p.line('E', name+"="+value) }

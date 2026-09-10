@@ -14,6 +14,11 @@
  *   P <text>            PAM_PROMPT_ECHO_OFF; the module writes one line to the
  *                       helper's stdin when the user has answered (the answer
  *                       is discarded, it is only an acknowledgement)
+ *   Q <text>            PAM_PROMPT_ECHO_OFF whose ANSWER is written back to
+ *                       the helper's stdin, one line. Used for the
+ *                       confirmation PIN the approval page shows. The answer
+ *                       is never logged: it is a shared secret for the few
+ *                       seconds it lives.
  *   E <NAME>=<value>    environment variable to export into the session
  *   R <code> <reason>   final result; code is one of
  *                       success | ignore | auth_err | authinfo_unavail | user_unknown
@@ -56,6 +61,9 @@
 #define DEFAULT_TIMEOUT 420
 #define MAX_LINE        8192
 #define MAX_INFO        4096
+/* La única respuesta que se pide hoy es un PIN de 4 dígitos. El margen cubre
+ * un formato futuro sin dar espacio a que nadie empuje basura por aquí. */
+#define MAX_ANSWER      64
 /* How long to let the helper finish exiting after it has sent its result
  * line, and how often to look while waiting. See reap_helper. */
 #define EXIT_GRACE_MS   2000
@@ -101,10 +109,19 @@ static void parse_opts(pam_handle_t *pamh, int argc, const char **argv, struct o
     }
 }
 
-/* Runs one conversation message of the given style; the response, if any,
- * is discarded. Errors are logged, never fatal. */
-static void converse(pam_handle_t *pamh, int style, const char *text)
+/* Runs one conversation message of the given style.
+ *
+ * When answer is non-NULL the user's reply is returned there (caller frees);
+ * otherwise it is freed here. Errors are logged, never fatal: a broken
+ * conversation must not decide a login by itself.
+ *
+ * The reply is never logged. It is the confirmation PIN, and putting it in
+ * syslog would hand it to anyone who can read the journal — which is the one
+ * place an attacker who already got a shell would look. */
+static void converse_full(pam_handle_t *pamh, int style, const char *text, char **answer)
 {
+    if (answer != NULL)
+        *answer = NULL;
     const struct pam_conv *conv = NULL;
     if (pam_get_item(pamh, PAM_CONV, (const void **)&conv) != PAM_SUCCESS || conv == NULL || conv->conv == NULL)
         return;
@@ -113,11 +130,21 @@ static void converse(pam_handle_t *pamh, int style, const char *text)
     struct pam_response *resp = NULL;
     int rc = conv->conv(1, &pmsg, &resp, conv->appdata_ptr);
     if (resp != NULL) {
+        if (answer != NULL && resp->resp != NULL) {
+            *answer = resp->resp;
+            resp->resp = NULL;
+        }
         free(resp->resp);
         free(resp);
     }
     if (rc != PAM_SUCCESS)
         pam_syslog(pamh, LOG_WARNING, "conversation failed: %s", pam_strerror(pamh, rc));
+}
+
+/* Runs one conversation message and discards the response. */
+static void converse(pam_handle_t *pamh, int style, const char *text)
+{
+    converse_full(pamh, style, text, NULL);
 }
 
 /* Drops control characters except '\n' and '\t'; bytes >= 0x80 pass
@@ -198,6 +225,47 @@ static int reap_helper(pid_t pid, int *status, long grace_ms)
     }
 }
 
+/* Copies at most max bytes of the user's answer keeping only printable
+ * characters. Unlike sanitize_text this also drops '\n' and '\t': the
+ * protocol is line based and a newline here would be read as a second
+ * command. Returns a newly allocated string, never NULL on success. */
+static char *sanitize_answer(const char *s, size_t max)
+{
+    if (s == NULL)
+        return NULL;
+    size_t n = strlen(s);
+    if (n > max)
+        n = max;
+    char *out = malloc(n + 1);
+    if (out == NULL)
+        return NULL;
+    size_t j = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20 || c == 0x7f)
+            continue;
+        out[j++] = (char)c;
+    }
+    out[j] = '\0';
+    return out;
+}
+
+/* Writes the whole buffer, retrying on EINTR and on short writes. A failure
+ * only means the helper reads EOF, which it treats as "no answer given". */
+static void write_all(int fd, const char *buf, size_t n)
+{
+    size_t off = 0;
+    while (off < n) {
+        ssize_t w = write(fd, buf + off, n - off);
+        if (w < 0) {
+            if (errno == EINTR)
+                continue;
+            return;
+        }
+        off += (size_t)w;
+    }
+}
+
 /* Handles one protocol line. Returns 1 when the final result was received
  * (stored in *rc), 0 to keep reading, -1 on a protocol violation. */
 static int handle_line(pam_handle_t *pamh, char *line, int *rc, int ackfd)
@@ -221,6 +289,31 @@ static int handle_line(pam_handle_t *pamh, char *line, int *rc, int ackfd)
                 w = write(ackfd, "\n", 1);
             } while (w < 0 && errno == EINTR);
         }
+        return 0;
+    }
+    case 'Q': {
+        /* Pregunta cuya RESPUESTA vuelve al helper. Es el PIN que la página
+         * de aprobación enseña: sin él, el helper no puede completar el
+         * canje. La respuesta se sanea y se acota; nunca se registra. */
+        char *txt = sanitize_text(arg, MAX_INFO);
+        if (txt == NULL)
+            return -1;
+        char *answer = NULL;
+        converse_full(pamh, PAM_PROMPT_ECHO_OFF, txt, &answer);
+        free(txt);
+        char *clean = sanitize_answer(answer, MAX_ANSWER);
+        if (answer != NULL) {
+            /* No dejar el PIN en memoria liberada más de lo necesario. */
+            memset(answer, 0, strlen(answer));
+            free(answer);
+        }
+        if (clean != NULL) {
+            size_t n = strlen(clean);
+            write_all(ackfd, clean, n);
+            memset(clean, 0, n);
+            free(clean);
+        }
+        write_all(ackfd, "\n", 1);
         return 0;
     }
     case 'E': {
