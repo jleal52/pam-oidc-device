@@ -294,9 +294,26 @@ this flow: if the provider is unreachable nobody gets in through the module.
 
 ```
 Defaults env_keep += "OIDC_USER OIDC_SUB"
-Defaults log_input, log_output
+Defaults logfile=/var/log/sudo.json
+Defaults log_format=json
 systems ALL=(ALL) NOPASSWD:ALL
 ```
+
+`env_keep` is what carries the identity into the privileged command;
+`log_format=json` is what records it. sudo's syslog line names only the
+shared account, but its JSON event log includes `runenv`, so every
+invocation can be traced back to a person:
+
+```json
+"submituser": "systems",
+"runargv": ["systemctl", "is-active", "ssh"],
+"runenv": ["OIDC_USER=ana@example.com", "OIDC_SUB=…"]
+```
+
+`log_input`/`log_output` would also work — their I/O logs carry the same
+environment — but they record everything typed and everything printed, which
+is a great deal of exposure for one field. `pam_exec` does not work: it sees
+neither the variable nor the caller's environment.
 
 ## Key-based login
 
