@@ -2,8 +2,10 @@ package sshcmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -312,5 +314,118 @@ func TestAuthorizedKeysRefusesImplausibleAccounts(t *testing.T) {
 			t.Errorf("account %q: the query reached the provider", account)
 		}
 		wantContains(t, "audit", audit, "result=error")
+	}
+}
+
+// ── Identidad en la línea de auditoría ──────────────────────────────────
+//
+// Sin esto, el log del propio servidor solo tiene una huella, y convertirla
+// en una persona obliga a preguntarle al proveedor: otro sistema, con otra
+// retención, para una pregunta que la máquina debería poder responder sobre
+// sí misma.
+
+func TestIdentitiesInReadsWhatIsServed(t *testing.T) {
+	t.Parallel()
+	lines := []string{
+		`environment="OIDC_USER=ana@example.com",environment="OIDC_SUB=1" ssh-ed25519 AAAA ana`,
+		`environment="OIDC_USER=bob@example.com" ssh-ed25519 BBBB bob`,
+	}
+	got := identitiesIn(lines, "OIDC_USER")
+	want := []string{"ana@example.com", "bob@example.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("identitiesIn = %q, quiero %q", got, want)
+	}
+}
+
+func TestIdentitiesInDeduplicatesAndKeepsOrder(t *testing.T) {
+	t.Parallel()
+	lines := []string{
+		`environment="OIDC_USER=ana@example.com" ssh-ed25519 AAAA uno`,
+		`environment="OIDC_USER=ana@example.com" ssh-ed25519 BBBB dos`,
+	}
+	if got := identitiesIn(lines, "OIDC_USER"); !reflect.DeepEqual(got, []string{"ana@example.com"}) {
+		t.Errorf("identitiesIn = %q, quiero una sola vez a ana", got)
+	}
+}
+
+func TestIdentitiesInIsBounded(t *testing.T) {
+	t.Parallel()
+	var lines []string
+	for i := 0; i < maxLoggedUsers*3; i++ {
+		lines = append(lines, fmt.Sprintf(`environment="OIDC_USER=u%d@example.com" ssh-ed25519 AAAA%d x`, i, i))
+	}
+	// Una cuenta compartida por mucha gente no puede convertir un login en
+	// una línea de syslog de miles de caracteres.
+	if got := identitiesIn(lines, "OIDC_USER"); len(got) != maxLoggedUsers {
+		t.Errorf("len(identitiesIn) = %d, quiero %d", len(got), maxLoggedUsers)
+	}
+}
+
+func TestIdentitiesInIgnoresOtherOptions(t *testing.T) {
+	t.Parallel()
+	lines := []string{
+		`environment="LD_PRELOAD=/tmp/evil.so",environment="OIDC_USER=ana@example.com" ssh-ed25519 AAAA x`,
+		`no-pty,environment="OTRA=cosa" ssh-ed25519 BBBB y`,
+	}
+	if got := identitiesIn(lines, "OIDC_USER"); !reflect.DeepEqual(got, []string{"ana@example.com"}) {
+		t.Errorf("identitiesIn = %q, quiero solo la variable configurada", got)
+	}
+}
+
+func TestAuditLineNamesTheUser(t *testing.T) {
+	t.Parallel()
+	a := &keysAudit{account: "systems", fingerprint: "SHA256:abc", result: resultOK, lines: 1,
+		users: []string{"ana@example.com"}}
+	got := a.line()
+	if !strings.Contains(got, "user=ana@example.com") {
+		t.Errorf("la línea no nombra al usuario: %q", got)
+	}
+}
+
+func TestAuditLineWithoutUsersIsUnchanged(t *testing.T) {
+	t.Parallel()
+	a := &keysAudit{account: "systems", fingerprint: "SHA256:abc", result: resultEmpty, lines: 0}
+	// Una denegación no sirve claves, así que no hay a quién nombrar: la
+	// línea tiene que quedar exactamente como antes de esta feature.
+	if got := a.line(); strings.Contains(got, "user=") {
+		t.Errorf("línea con user= sin haber servido nada: %q", got)
+	}
+}
+
+func TestAuthorizedKeysAuditNamesWhoWasServed(t *testing.T) {
+	t.Parallel()
+	f := newKeysFixture(t, "24h")
+	f.provider.SetAuthorizedKeys("systems", []string{
+		`environment="OIDC_USER=ana@example.com" ` + testKey,
+	})
+
+	_, audit := f.run(t, "systems", "")
+
+	// Este test recorre el camino entero a propósito. Los que prueban
+	// `identitiesIn` por separado siguen pasando aunque nadie llame a la
+	// función: el fallo vive en la costura, no en las piezas.
+	if !strings.Contains(audit, "user=ana@example.com") {
+		t.Errorf("audit = %q; no dice a quién se sirvió la clave", audit)
+	}
+}
+
+func TestAuthorizedKeysAuditNamesWhoWasServedFromTheCache(t *testing.T) {
+	t.Parallel()
+	f := newKeysFixture(t, "24h")
+	f.provider.SetAuthorizedKeys("systems", []string{
+		`environment="OIDC_USER=ana@example.com" ` + testKey,
+	})
+	f.run(t, "systems", "") // calienta la caché
+
+	f.provider.SetKeysOutcome(testprovider.KeysServerError)
+	_, audit := f.run(t, "systems", "")
+
+	// Servir de caché sigue siendo servir: si el log no dice a quién, una
+	// caída del proveedor deja un hueco justo en la trazabilidad.
+	if !strings.Contains(audit, "source=cache") {
+		t.Fatalf("audit = %q; se esperaba respuesta de caché", audit)
+	}
+	if !strings.Contains(audit, "user=ana@example.com") {
+		t.Errorf("audit = %q; la respuesta de caché no dice a quién se sirvió", audit)
 	}
 }

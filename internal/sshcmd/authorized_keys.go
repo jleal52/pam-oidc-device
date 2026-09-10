@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -121,6 +122,7 @@ func fetchKeys(ctx context.Context, env *Env, audit *keysAudit) (lines []string)
 		audit.err = err
 	}
 	audit.result = resultOK
+	audit.users = identitiesIn(keys.Lines, cfg.SessionEnv)
 	return keys.Lines
 }
 
@@ -144,6 +146,7 @@ func keysAfterError(cfg *config.Config, audit *keysAudit, err error) []string {
 	}
 	audit.result, audit.err = resultCache, err
 	audit.source, audit.age = "cache", age
+	audit.users = identitiesIn(lines, cfg.SessionEnv)
 	return lines
 }
 
@@ -179,12 +182,54 @@ func writeLines(env *Env, lines []string) {
 	_ = w.Flush()
 }
 
+// maxLoggedUsers bounds the identities named in one audit line. A shared
+// account with many people behind it must not turn one login into a syslog
+// line thousands of characters long.
+const maxLoggedUsers = 8
+
+// identitiesIn returns, in order and without repeats, the identities the
+// served lines carry in their `environment="<envName>=..."` option.
+//
+// It reads what is actually being handed to sshd rather than what the
+// provider said elsewhere, so the log records what was served, not what was
+// intended.
+func identitiesIn(lines []string, envName string) []string {
+	if envName == "" {
+		return nil
+	}
+	prefix := `environment="` + envName + `=`
+	var out []string
+	for _, line := range lines {
+		rest := line
+		for {
+			i := strings.Index(rest, prefix)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(prefix):]
+			j := strings.IndexByte(rest, '"')
+			if j < 0 {
+				break
+			}
+			if v := rest[:j]; v != "" && !slices.Contains(out, v) {
+				if len(out) == maxLoggedUsers {
+					return out
+				}
+				out = append(out, v)
+			}
+			rest = rest[j:]
+		}
+	}
+	return out
+}
+
 // keysAudit accumulates the fields of the single syslog line every query
 // writes.
 type keysAudit struct {
 	account     string
 	fingerprint string
 	result      string
+	users       []string
 	lines       int
 	source      string
 	age         time.Duration
@@ -207,6 +252,13 @@ func (a *keysAudit) line() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "account=%s fingerprint=%s result=%s lines=%d",
 		valueOrDash(a.account), valueOrDash(a.fingerprint), valueOrDash(a.result), a.lines)
+	// Whose key was served. Without this the host's own log only has a
+	// fingerprint, and turning that into a person means asking the provider:
+	// a second system, with its own retention, for a question the machine
+	// should be able to answer about itself.
+	if len(a.users) > 0 {
+		fmt.Fprintf(&b, " user=%s", sanitize(strings.Join(a.users, ",")))
+	}
 	if a.source != "" {
 		fmt.Fprintf(&b, " source=%s age=%s", sanitize(a.source), a.age.Round(time.Second))
 	}
