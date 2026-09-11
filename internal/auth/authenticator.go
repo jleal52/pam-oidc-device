@@ -231,8 +231,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, localUser string) Resu
 	}
 	pin, err := a.askApproval(da)
 	if err != nil {
-		// Sin PIN no hay nada que canjear. Decirlo es mejor que quedarse
-		// esperando a un prompt que ya no va a llegar.
+		// With no PIN there is nothing to redeem. Saying so beats waiting
+		// for a prompt that is never coming.
 		a.info(msgPinMissing)
 		return a.fail(res, AuthErr, ReasonNoConfirmation, err)
 	}
@@ -333,10 +333,10 @@ func (a *Authenticator) waitForToken(ctx context.Context, da *oauth2.DeviceAuthR
 func (a *Authenticator) waitFailure(res Result, err error) Result {
 	switch {
 	case errors.Is(err, oidc.ErrAccessDenied):
-		// En el flujo con PIN, `access_denied` cubre dos cosas que el
-		// proveedor no distingue por código: el PIN no coincide, o la
-		// aprobación se denegó. El mensaje dice las dos, y en ambas lo que
-		// toca es lo mismo: volver a empezar.
+		// In the PIN flow, `access_denied` covers two things the provider
+		// does not tell apart by code: the PIN did not match, or the
+		// approval was refused. The message names both, and either way the
+		// remedy is the same: start again.
 		if a.confirm {
 			a.info(msgPinRejected)
 		} else {

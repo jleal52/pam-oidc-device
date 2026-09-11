@@ -645,12 +645,12 @@ func TestZeroResultIsNotSuccess(t *testing.T) {
 	}
 }
 
-// ── Confirmación con PIN ────────────────────────────────────────────────
+// ── PIN confirmation ────────────────────────────────────────────────────
 //
-// El PIN cierra el ataque de «apruébame este enlace»: quien aprueba en el
-// navegador no es necesariamente quien tiene el terminal, y hasta ahora nada
-// lo comprobaba. El número va de la web al terminal, así que la aprobación no
-// le sirve a quien no está delante de él.
+// The PIN closes the "approve this link for me" attack: whoever approves in
+// the browser is not necessarily whoever holds the terminal, and until now
+// nothing checked. The number travels from the web page to the terminal, so
+// an approval is worthless to anyone not sitting at it.
 
 func TestAuthenticateWithConfirmationSendsThePin(t *testing.T) {
 	flow := happyFlow()
@@ -662,9 +662,9 @@ func TestAuthenticateWithConfirmationSendsThePin(t *testing.T) {
 
 	assertResult(t, res, auth.Success, "")
 	if flow.lastConfirmation != "4271" {
-		t.Errorf("confirmación enviada = %q, quiero %q", flow.lastConfirmation, "4271")
+		t.Errorf("confirmation sent = %q, want %q", flow.lastConfirmation, "4271")
 	}
-	// El prompt tiene que PEDIR el PIN, no limitarse a esperar un Enter.
+	// The prompt must ASK for the PIN, not merely wait for an Enter.
 	var asked bool
 	for _, l := range prompt.lines {
 		if strings.HasPrefix(l, "?? ") && strings.Contains(l, "PIN") {
@@ -672,7 +672,7 @@ func TestAuthenticateWithConfirmationSendsThePin(t *testing.T) {
 		}
 	}
 	if !asked {
-		t.Errorf("no se pidió el PIN; líneas: %q", prompt.lines)
+		t.Errorf("the PIN was never asked for; lines: %q", prompt.lines)
 	}
 }
 
@@ -683,11 +683,11 @@ func TestAuthenticateWithoutConfirmationSendsNoPin(t *testing.T) {
 
 	assertResult(t, res, auth.Success, "")
 	if flow.lastConfirmation != "" {
-		t.Errorf("confirmación = %q, quiero vacía: el camino de siempre no manda PIN", flow.lastConfirmation)
+		t.Errorf("confirmation = %q, want empty: the plain path sends no PIN", flow.lastConfirmation)
 	}
 	for _, l := range prompt.lines {
 		if strings.HasPrefix(l, "?? ") {
-			t.Errorf("se preguntó el PIN sin estar en modo confirmación: %q", l)
+			t.Errorf("asked for a PIN outside confirmation mode: %q", l)
 		}
 	}
 }
@@ -700,25 +700,25 @@ func TestAuthenticateWithConfirmationRefusesAnEmptyPin(t *testing.T) {
 	res := a.Authenticate(context.Background(), "systems")
 
 	assertResult(t, res, auth.AuthErr, auth.ReasonNoConfirmation)
-	// Sin PIN no hay nada que canjear: preguntar al proveedor sería gastar
-	// una petición para que la rechace.
+	// With no PIN there is nothing to redeem: asking the provider would
+	// spend a request just to have it refused.
 	if flow.waitCalls != 0 {
-		t.Errorf("waitCalls = %d, quiero 0", flow.waitCalls)
+		t.Errorf("waitCalls = %d, want 0", flow.waitCalls)
 	}
 }
 
 func TestAuthenticateWithConfirmationFailsWhenItCannotAsk(t *testing.T) {
 	flow := happyFlow()
-	a := newAuthenticator(t, flow, &recordingPrompter{askErr: errors.New("sin conversación")})
+	a := newAuthenticator(t, flow, &recordingPrompter{askErr: errors.New("no conversation")})
 	a.WithConfirmation(true)
 
 	res := a.Authenticate(context.Background(), "systems")
 
-	// A diferencia de Prompt, aquí no se puede «seguir igualmente»: sin
-	// respuesta no hay PIN, y colgarse esperando sería peor que fallar.
+	// Unlike Prompt, there is no "carry on anyway" here: no answer means no
+	// PIN, and hanging about waiting would be worse than failing.
 	assertResult(t, res, auth.AuthErr, auth.ReasonNoConfirmation)
 	if flow.waitCalls != 0 {
-		t.Errorf("waitCalls = %d, quiero 0", flow.waitCalls)
+		t.Errorf("waitCalls = %d, want 0", flow.waitCalls)
 	}
 }
 
@@ -734,8 +734,8 @@ func TestAuthenticateWithConfirmationExplainsARejectedPin(t *testing.T) {
 	res := a.Authenticate(context.Background(), "systems")
 
 	assertResult(t, res, auth.AuthErr, auth.ReasonDenied)
-	// El mensaje tiene que decir que el intento está anulado: no hay
-	// reintento, y quien espere un segundo prompt se queda mirando.
+	// The message has to say the attempt is void: there is no retry, and
+	// anyone expecting a second prompt would just sit there.
 	var told bool
 	for _, l := range prompt.lines {
 		if strings.Contains(l, "void") {
@@ -743,6 +743,6 @@ func TestAuthenticateWithConfirmationExplainsARejectedPin(t *testing.T) {
 		}
 	}
 	if !told {
-		t.Errorf("no se avisó de que el intento queda anulado; líneas: %q", prompt.lines)
+		t.Errorf("never said the attempt is void; lines: %q", prompt.lines)
 	}
 }

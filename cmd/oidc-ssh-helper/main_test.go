@@ -296,10 +296,10 @@ func TestDeviceAuthParamsAnnouncesConfirmationOnlyWhenAsked(t *testing.T) {
 		t.Fatalf("deviceAuthParams: %v", err)
 	}
 	if _, ok := off["confirmation_supported"]; ok {
-		// Anunciarlo contra un proveedor que no lo entiende no rompe nada,
-		// pero anunciarlo cuando el propio módulo no va a preguntar el PIN
-		// sí: el proveedor lo generaría y nadie lo pediría.
-		t.Errorf("se anunció confirmation_supported sin pedirlo: %v", off)
+		// Advertising it to a provider that does not understand it breaks
+		// nothing; advertising it when this module is not going to ask for
+		// the PIN does: the provider would mint one and nobody would ask.
+		t.Errorf("advertised confirmation_supported without asking: %v", off)
 	}
 
 	on, err := deviceAuthParams(cfg, "systems", "", true)
@@ -307,9 +307,9 @@ func TestDeviceAuthParamsAnnouncesConfirmationOnlyWhenAsked(t *testing.T) {
 		t.Fatalf("deviceAuthParams: %v", err)
 	}
 	if on["confirmation_supported"] != "true" {
-		t.Errorf("confirmation_supported = %q, quiero \"true\"", on["confirmation_supported"])
+		t.Errorf("confirmation_supported = %q, want \"true\"", on["confirmation_supported"])
 	}
 	if on["host_assertion"] == "" || on["account"] != "systems" {
-		t.Errorf("el resto del contrato se perdió: %v", on)
+		t.Errorf("the rest of the contract was lost: %v", on)
 	}
 }

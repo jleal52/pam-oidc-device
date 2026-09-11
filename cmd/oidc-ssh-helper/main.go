@@ -171,9 +171,10 @@ func run(out *protocol, lg *logger, configPath, user, rhost string) (code, reaso
 	// provider which enrolled host and which local account the login is
 	// for; a host that is not enrolled sends nothing extra and gets the
 	// plain flow.
-	// Confirmación con PIN: se lee del discovery ANTES de pedir el código.
-	// Solo si el proveedor lo anuncia se declara `confirmation_supported` y
-	// se prepara el prompt; así un módulo nuevo contra un proveedor viejo
+	// PIN confirmation: read from discovery BEFORE asking for the code.
+	// Only if the provider advertises it do we declare
+	// `confirmation_supported` and set up the prompt; that way a new module
+	// against an old provider
 	// sigue entrando como siempre.
 	confirm := client.SSH().ConfirmationSupported
 	extra, err := deviceAuthParams(cfg, user, sshAccessEndpoint(client), confirm)
@@ -192,8 +193,8 @@ func run(out *protocol, lg *logger, configPath, user, rhost string) (code, reaso
 
 	// The authenticator bounds its own wait (config timeout and device code
 	// lifetime); the module additionally enforces a wall-clock limit.
-	// El PIN solo aplica si además se manda la assertion: es la misma
-	// condición que usa el proveedor para generarlo (flujo SSH identificado).
+	// The PIN only applies when the assertion is sent too: it is the same
+	// condition the provider uses to generate it (an identified SSH flow).
 	res := auth.New(cfg, client, out).
 		WithDeviceAuthParams(extra).
 		WithConfirmation(confirm && extra != nil).

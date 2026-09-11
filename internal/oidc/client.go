@@ -305,9 +305,9 @@ func (c *Client) WaitForToken(ctx context.Context, da *oauth2.DeviceAuthResponse
 	polled := *da
 	polled.Interval = clampInterval(da.Interval)
 
-	// El PIN de confirmación viaja como parámetro del canje. Cuando se manda,
-	// el proveedor no responde `authorization_pending`, así que en la práctica
-	// esto es una sola petición y no un sondeo.
+	// The confirmation PIN travels as a parameter of the exchange. When it
+	// is sent the provider does not answer `authorization_pending`, so in
+	// practice this is a single request rather than a poll.
 	var opts []oauth2.AuthCodeOption
 	if confirmation != "" {
 		opts = append(opts, oauth2.SetAuthURLParam("user_confirmation", confirmation))

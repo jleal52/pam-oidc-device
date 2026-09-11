@@ -317,12 +317,12 @@ func TestAuthorizedKeysRefusesImplausibleAccounts(t *testing.T) {
 	}
 }
 
-// ── Identidad en la línea de auditoría ──────────────────────────────────
+// ── Identity in the audit line ──────────────────────────────────────────
 //
-// Sin esto, el log del propio servidor solo tiene una huella, y convertirla
-// en una persona obliga a preguntarle al proveedor: otro sistema, con otra
-// retención, para una pregunta que la máquina debería poder responder sobre
-// sí misma.
+// Without this the server's own log holds nothing but a fingerprint, and
+// turning that into a person means asking the provider: another system, with
+// another retention policy, for a question the machine should be able to
+// answer about itself.
 
 func TestIdentitiesInReadsWhatIsServed(t *testing.T) {
 	t.Parallel()
@@ -333,7 +333,7 @@ func TestIdentitiesInReadsWhatIsServed(t *testing.T) {
 	got := identitiesIn(lines, "OIDC_USER")
 	want := []string{"ana@example.com", "bob@example.com"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("identitiesIn = %q, quiero %q", got, want)
+		t.Errorf("identitiesIn = %q, want %q", got, want)
 	}
 }
 
@@ -344,7 +344,7 @@ func TestIdentitiesInDeduplicatesAndKeepsOrder(t *testing.T) {
 		`environment="OIDC_USER=ana@example.com" ssh-ed25519 BBBB dos`,
 	}
 	if got := identitiesIn(lines, "OIDC_USER"); !reflect.DeepEqual(got, []string{"ana@example.com"}) {
-		t.Errorf("identitiesIn = %q, quiero una sola vez a ana", got)
+		t.Errorf("identitiesIn = %q, want ana exactly once", got)
 	}
 }
 
@@ -354,10 +354,10 @@ func TestIdentitiesInIsBounded(t *testing.T) {
 	for i := 0; i < maxLoggedUsers*3; i++ {
 		lines = append(lines, fmt.Sprintf(`environment="OIDC_USER=u%d@example.com" ssh-ed25519 AAAA%d x`, i, i))
 	}
-	// Una cuenta compartida por mucha gente no puede convertir un login en
-	// una línea de syslog de miles de caracteres.
+	// An account shared by a crowd must not turn one login into a syslog
+	// line thousands of characters long.
 	if got := identitiesIn(lines, "OIDC_USER"); len(got) != maxLoggedUsers {
-		t.Errorf("len(identitiesIn) = %d, quiero %d", len(got), maxLoggedUsers)
+		t.Errorf("len(identitiesIn) = %d, want %d", len(got), maxLoggedUsers)
 	}
 }
 
@@ -365,10 +365,10 @@ func TestIdentitiesInIgnoresOtherOptions(t *testing.T) {
 	t.Parallel()
 	lines := []string{
 		`environment="LD_PRELOAD=/tmp/evil.so",environment="OIDC_USER=ana@example.com" ssh-ed25519 AAAA x`,
-		`no-pty,environment="OTRA=cosa" ssh-ed25519 BBBB y`,
+		`no-pty,environment="OTHER=thing" ssh-ed25519 BBBB y`,
 	}
 	if got := identitiesIn(lines, "OIDC_USER"); !reflect.DeepEqual(got, []string{"ana@example.com"}) {
-		t.Errorf("identitiesIn = %q, quiero solo la variable configurada", got)
+		t.Errorf("identitiesIn = %q, want only the configured variable", got)
 	}
 }
 
@@ -378,17 +378,17 @@ func TestAuditLineNamesTheUser(t *testing.T) {
 		users: []string{"ana@example.com"}}
 	got := a.line()
 	if !strings.Contains(got, "user=ana@example.com") {
-		t.Errorf("la línea no nombra al usuario: %q", got)
+		t.Errorf("the line does not name the user: %q", got)
 	}
 }
 
 func TestAuditLineWithoutUsersIsUnchanged(t *testing.T) {
 	t.Parallel()
 	a := &keysAudit{account: "systems", fingerprint: "SHA256:abc", result: resultEmpty, lines: 0}
-	// Una denegación no sirve claves, así que no hay a quién nombrar: la
-	// línea tiene que quedar exactamente como antes de esta feature.
+	// A denial serves no keys, so there is nobody to name: the line must
+	// come out exactly as it did before this feature.
 	if got := a.line(); strings.Contains(got, "user=") {
-		t.Errorf("línea con user= sin haber servido nada: %q", got)
+		t.Errorf("line carries user= without having served anything: %q", got)
 	}
 }
 
@@ -401,11 +401,11 @@ func TestAuthorizedKeysAuditNamesWhoWasServed(t *testing.T) {
 
 	_, audit := f.run(t, "systems", "")
 
-	// Este test recorre el camino entero a propósito. Los que prueban
-	// `identitiesIn` por separado siguen pasando aunque nadie llame a la
-	// función: el fallo vive en la costura, no en las piezas.
+	// This walks the whole path on purpose. The tests that exercise
+	// `identitiesIn` on its own keep passing even if nobody calls it: the
+	// bug would live in the seam, not in the pieces.
 	if !strings.Contains(audit, "user=ana@example.com") {
-		t.Errorf("audit = %q; no dice a quién se sirvió la clave", audit)
+		t.Errorf("audit = %q; does not say whose key was served", audit)
 	}
 }
 
@@ -415,17 +415,17 @@ func TestAuthorizedKeysAuditNamesWhoWasServedFromTheCache(t *testing.T) {
 	f.provider.SetAuthorizedKeys("systems", []string{
 		`environment="OIDC_USER=ana@example.com" ` + testKey,
 	})
-	f.run(t, "systems", "") // calienta la caché
+	f.run(t, "systems", "") // warm the cache
 
 	f.provider.SetKeysOutcome(testprovider.KeysServerError)
 	_, audit := f.run(t, "systems", "")
 
-	// Servir de caché sigue siendo servir: si el log no dice a quién, una
-	// caída del proveedor deja un hueco justo en la trazabilidad.
+	// Serving from cache is still serving: if the log does not say to whom,
+	// a provider outage punches a hole in the very thing being traced.
 	if !strings.Contains(audit, "source=cache") {
-		t.Fatalf("audit = %q; se esperaba respuesta de caché", audit)
+		t.Fatalf("audit = %q; expected a cached answer", audit)
 	}
 	if !strings.Contains(audit, "user=ana@example.com") {
-		t.Errorf("audit = %q; la respuesta de caché no dice a quién se sirvió", audit)
+		t.Errorf("audit = %q; the cached answer does not say who was served", audit)
 	}
 }

@@ -205,9 +205,9 @@ func discover(ctx context.Context, cfg *config.Config) (*oidc.Client, error) {
 // a host and issues the token accordingly.
 func authorizeEnrolment(ctx context.Context, env *Env, cfg *config.Config, client *oidc.Client, name string, groups []string) (string, error) {
 	extra := map[string]string{"intent": intentEnroll}
-	// Enrolar elige los grupos, y los grupos deciden quién entrará después en
-	// esta máquina: es la aprobación de más valor de todo el sistema, así que
-	// se confirma con PIN siempre que el proveedor sepa hacerlo.
+	// Enrolment picks the groups, and the groups decide who gets into this
+	// machine later: it is the most valuable approval in the whole system,
+	// so it is confirmed with a PIN whenever the provider can do it.
 	confirm := client.SSH().ConfirmationSupported
 	if confirm {
 		extra["confirmation_supported"] = "true"

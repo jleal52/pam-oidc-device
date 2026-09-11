@@ -59,8 +59,8 @@
 #define DEFAULT_TIMEOUT 420
 #define MAX_LINE        8192
 #define MAX_INFO        4096
-/* La única respuesta que se pide hoy es un PIN de 4 dígitos. El margen cubre
- * un formato futuro sin dar espacio a que nadie empuje basura por aquí. */
+/* The only answer asked for today is a 4-digit PIN. The headroom leaves room
+ * for a future format without inviting anyone to push rubbish through here. */
 #define MAX_ANSWER      64
 /* How long to let the helper finish exiting after it has sent its result
  * line, and how often to look while waiting. See reap_helper. */
@@ -288,8 +288,8 @@ static int handle_line(pam_handle_t *pamh, char *line, int *rc, int ackfd)
         return 0;
     }
     case 'Q': {
-        /* Pregunta cuya RESPUESTA vuelve al helper. Es el PIN que la página
-         * de aprobación enseña: sin él, el helper no puede completar el
+        /* A question whose ANSWER goes back to the helper. It is the PIN the
+         * approval page shows: without it the helper cannot complete the
          * canje. La respuesta se sanea y se acota; nunca se registra. */
         char *txt = sanitize_text(arg, MAX_INFO);
         if (txt == NULL)
@@ -299,7 +299,7 @@ static int handle_line(pam_handle_t *pamh, char *line, int *rc, int ackfd)
         free(txt);
         char *clean = sanitize_answer(answer, MAX_ANSWER);
         if (answer != NULL) {
-            /* No dejar el PIN en memoria liberada más de lo necesario. */
+            /* Do not leave the PIN sitting in freed memory. */
             memset(answer, 0, strlen(answer));
             free(answer);
         }

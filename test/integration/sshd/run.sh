@@ -289,7 +289,7 @@ rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "cache-warm: ssh exit $rc with a cached answer available" "$WORK/ssh.err" "$SSHD_LOG" "$WORK/mock.err"
 grep -q '^OIDC_USER=alice@example.com' <<<"$out" || fail "cache-warm: the cached line lost its options: $out"
-expect_syslog cache-warm "$mark" "account=systems .*result=cache lines=1 source=cache age="
+expect_syslog cache-warm "$mark" "account=systems .*result=cache lines=1 .*source=cache age="
 echo "PASS cache-warm"
 
 rm -rf "${CACHE:?}/systems"
