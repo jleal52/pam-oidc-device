@@ -41,8 +41,8 @@ jobs:
         run: make helper
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: pam_oidc_device-${{ runner.arch }}.so
-          path: build/pam_oidc_device.so
+          name: pam_oidc_ssh-${{ runner.arch }}.so
+          path: build/pam_oidc_ssh.so
           if-no-files-found: error
 
   lint:
@@ -99,21 +99,21 @@ jobs:
         run: |
           docker run --rm -v "$PWD/dist:/d:ro" debian:bookworm-slim bash -euc '
             apt-get update -qq >/dev/null
-            apt-get install -y -qq /d/pam-oidc-device_0.0.0~ci_amd64.deb >/dev/null
+            apt-get install -y -qq /d/oidc-ssh_0.0.0~ci_amd64.deb >/dev/null
             getent passwd oidc-ssh >/dev/null
             test "$(stat -c %a /etc/oidc-ssh)" = 2750
             test "$(stat -c %U:%G /var/cache/oidc-ssh)" = oidc-ssh:oidc-ssh
             install -m 0640 /dev/null /etc/oidc-ssh/host.key
             test "$(stat -c %G /etc/oidc-ssh/host.key)" = oidc-ssh
-            runuser -u oidc-ssh -- /usr/libexec/pam-oidc-device/oidc-ssh authorized-keys systems
-            apt-get install -y -qq --reinstall /d/pam-oidc-device_0.0.0~ci_amd64.deb >/dev/null
+            runuser -u oidc-ssh -- /usr/libexec/oidc-ssh/oidc-ssh authorized-keys systems
+            apt-get install -y -qq --reinstall /d/oidc-ssh_0.0.0~ci_amd64.deb >/dev/null
           '
       - name: Install the rpm (Fedora 41) and check the account and modes
         run: |
           docker run --rm -v "$PWD/dist:/d:ro" fedora:41 bash -euc '
-            dnf install -y -q /d/pam-oidc-device-0.0.0~ci-1.x86_64.rpm >/dev/null
+            dnf install -y -q /d/oidc-ssh-0.0.0~ci-1.x86_64.rpm >/dev/null
             getent passwd oidc-ssh >/dev/null
             test "$(stat -c %a /etc/oidc-ssh)" = 2750
             test "$(stat -c %U:%G /var/cache/oidc-ssh)" = oidc-ssh:oidc-ssh
-            test -x /usr/libexec/pam-oidc-device/oidc-ssh
+            test -x /usr/libexec/oidc-ssh/oidc-ssh
           '

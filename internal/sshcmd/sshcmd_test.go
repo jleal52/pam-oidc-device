@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/jleal52/pam-oidc-device/internal/hostid"
-	"github.com/jleal52/pam-oidc-device/internal/testprovider"
+	"github.com/jleal52/oidc-ssh/internal/hostid"
+	"github.com/jleal52/oidc-ssh/internal/testprovider"
 )
 
 // fixedNow is the clock every test runs on, so that ages in reports and
@@ -66,7 +66,7 @@ func newEnv(t *testing.T, configPath string) *testEnv {
 			Now:        func() time.Time { return fixedNow },
 			Geteuid:    func() int { return 0 },
 			Hostname:   func() (string, error) { return "test-host.example", nil },
-			Executable: func() (string, error) { return "/usr/libexec/pam-oidc-device/oidc-ssh", nil },
+			Executable: func() (string, error) { return "/usr/libexec/oidc-ssh/oidc-ssh", nil },
 		},
 		stdout: out,
 		stderr: errOut,

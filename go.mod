@@ -1,4 +1,4 @@
-module github.com/jleal52/pam-oidc-device
+module github.com/jleal52/oidc-ssh
 
 go 1.26.0
 

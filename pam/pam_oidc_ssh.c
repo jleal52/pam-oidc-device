@@ -1,5 +1,5 @@
 /*
- * pam_oidc_device — thin PAM module that delegates the OpenID Connect
+ * pam_oidc_ssh — thin PAM module that delegates the OpenID Connect
  * Device Authorization Grant to a helper process.
  *
  * Why a helper process: OpenSSH runs pam_authenticate() in a child it
@@ -26,10 +26,8 @@
  * wall-clock timeout maps to PAM_AUTHINFO_UNAVAIL (fail closed).
  *
  * Module arguments:
- *   config=<path>   configuration file (default: the first that exists of
- *                   /etc/oidc-ssh/config.yaml and the legacy
- *                   /etc/security/pam_oidc_device.yaml)
- *   helper=<path>   helper binary (default /usr/libexec/pam-oidc-device/pam-oidc-device-helper)
+ *   config=<path>   configuration file (default /etc/oidc-ssh/config.yaml)
+ *   helper=<path>   helper binary (default /usr/libexec/oidc-ssh/oidc-ssh-helper)
  *   timeout=<sec>   wall-clock bound for the whole exchange (default 420)
  *   debug           forwarded to the helper (verbose syslog)
  *
@@ -57,7 +55,7 @@
 #include <security/pam_ext.h>
 #include <security/pam_modules.h>
 
-#define DEFAULT_HELPER  "/usr/libexec/pam-oidc-device/pam-oidc-device-helper"
+#define DEFAULT_HELPER  "/usr/libexec/oidc-ssh/oidc-ssh-helper"
 #define DEFAULT_TIMEOUT 420
 #define MAX_LINE        8192
 #define MAX_INFO        4096
@@ -78,12 +76,10 @@ struct opts {
 
 static void parse_opts(pam_handle_t *pamh, int argc, const char **argv, struct opts *o)
 {
-    /* NULL, not a path: without `config=` the helper picks the file itself,
-     * trying /etc/oidc-ssh/config.yaml before the legacy
-     * /etc/security/pam_oidc_device.yaml. Hardcoding the legacy path here
-     * made that search dead code on the PAM path, so a host enrolled with
-     * `oidc-ssh` wrote its identity to one file while logins read the
-     * other. */
+    /* NULL, not a path: without `config=` the helper resolves the file
+     * itself. Hardcoding a path here once made that resolution dead code on
+     * the PAM path, so a host enrolled with `oidc-ssh` wrote its identity to
+     * one file while logins read another. */
     o->config = NULL;
     o->helper = DEFAULT_HELPER;
     o->timeout = DEFAULT_TIMEOUT;
@@ -518,7 +514,7 @@ PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const cha
 }
 
 /* The module contributes nothing to the account stack: PAM_IGNORE, so that a
- * stray "account required pam_oidc_device.so" line cannot let everyone in. */
+ * stray "account required pam_oidc_ssh.so" line cannot let everyone in. */
 PAM_EXTERN int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
     (void)pamh; (void)flags; (void)argc; (void)argv;

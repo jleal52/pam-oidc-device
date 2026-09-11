@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const commentedConfig = `# pam-oidc-device configuration.
+const commentedConfig = `# oidc-ssh configuration.
 
 issuer: https://login.example.com
 
@@ -36,7 +36,7 @@ func TestWithConfigValuesReplacesInPlace(t *testing.T) {
 		// (its alignment is rebuilt, the comment itself is not).
 		"identity_key: /srv/oidc/host.key # 0640 root:oidc-ssh",
 		// Every comment and blank line around it survived.
-		"# pam-oidc-device configuration.",
+		"# oidc-ssh configuration.",
 		"# The client registered for the device flow.",
 		"# host_id: written by enroll",
 		"\n\nissuer: https://login.example.com\n",

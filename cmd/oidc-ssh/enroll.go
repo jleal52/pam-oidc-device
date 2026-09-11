@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/sshcmd"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/sshcmd"
 )
 
 // runEnroll parses the flags of "oidc-ssh enroll" and runs it.
@@ -27,7 +27,7 @@ flags:
 	}
 
 	var opts sshcmd.EnrollOptions
-	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+", then "+config.LegacyPath+")")
+	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+")")
 	fs.StringVar(&opts.Issuer, "issuer", "", "OpenID Connect issuer URL (default: the configured issuer)")
 	fs.StringVar(&opts.ClientID, "client-id", "", "OAuth 2.0 client id (default: the configured client_id)")
 	fs.StringVar(&opts.Name, "name", "", "unique name for this host at the provider (required)")

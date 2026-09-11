@@ -13,9 +13,9 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/hostid"
-	"github.com/jleal52/pam-oidc-device/internal/testprovider"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/hostid"
+	"github.com/jleal52/oidc-ssh/internal/testprovider"
 )
 
 // --- deviceAuthParams ---

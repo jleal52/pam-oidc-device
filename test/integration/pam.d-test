@@ -1,5 +1,5 @@
 # Test service: the module alone decides. With "required", PAM_IGNORE from
 # an unmapped user leaves the stack without a verdict and pam_authenticate
 # fails (PAM_PERM_DENIED).
-auth    required    pam_oidc_device.so config=/etc/pam_oidc_device.yaml debug
+auth    required    pam_oidc_ssh.so config=/etc/pam_oidc_ssh.yaml debug
 account required    pam_permit.so

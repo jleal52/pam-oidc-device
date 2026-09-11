@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/hostid"
-	"github.com/jleal52/pam-oidc-device/internal/provider"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/hostid"
+	"github.com/jleal52/oidc-ssh/internal/provider"
 )
 
 // maxDiscoveryBody bounds the discovery document read by the connectivity

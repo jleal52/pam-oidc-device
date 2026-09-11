@@ -18,8 +18,8 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/oidc"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/oidc"
 )
 
 // Code is the outcome of an authentication attempt, one per PAM return

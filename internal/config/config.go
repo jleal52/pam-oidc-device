@@ -24,13 +24,12 @@ import (
 // path is given. It is shared by the PAM module helper and oidc-ssh.
 const DefaultPath = "/etc/oidc-ssh/config.yaml"
 
-// LegacyPath is the configuration path used by releases before 0.2.0. It is
-// still honoured by LoadDefault when DefaultPath does not exist so that an
-// upgrade does not lock anybody out.
-const LegacyPath = "/etc/security/pam_oidc_device.yaml"
-
-// defaultPaths is the search order used by LoadDefault.
-var defaultPaths = []string{DefaultPath, LegacyPath}
+// defaultPaths is the search order used by LoadDefault. It has had a single
+// entry since 1.0.0: the pre-0.2.0 location under /etc/security was dropped
+// with the rename, because a fallback named after the old project would have
+// kept it alive on disk forever. The search machinery stays because it is
+// what makes the order testable.
+var defaultPaths = []string{DefaultPath}
 
 // hostnamePlaceholder is replaced by the machine hostname inside device_name.
 const hostnamePlaceholder = "{{hostname}}"
@@ -165,16 +164,16 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// LoadDefault loads the configuration from the first existing file among
-// DefaultPath and LegacyPath, in that order. When neither exists the error
-// wraps ErrNoConfigFile and names both locations.
+// LoadDefault loads the configuration from the first existing file in
+// defaultPaths. When none exists the error wraps ErrNoConfigFile and names
+// the locations it tried.
 func LoadDefault() (*Config, error) {
 	return loadFirst(defaultPaths)
 }
 
-// FindDefault returns the path LoadDefault would read: the first existing
-// file among DefaultPath and LegacyPath. It is what a tool that rewrites the
-// configuration (enrolment) must edit so that later loads see the change.
+// FindDefault returns the path LoadDefault would read. It is what a tool that
+// rewrites the configuration (enrolment) must edit so that later loads see
+// the change.
 func FindDefault() (string, error) {
 	return findFirst(defaultPaths)
 }
@@ -190,8 +189,8 @@ func loadFirst(paths []string) (*Config, error) {
 
 // findFirst returns the first path that exists. A stat failure other than
 // "does not exist" (a permission problem, typically) is reported instead of
-// being skipped, so that a misconfigured primary file cannot silently hand
-// control to the legacy one.
+// being skipped: a file that is there but unreadable is a misconfiguration to
+// shout about, not one to skip past.
 func findFirst(paths []string) (string, error) {
 	for _, p := range paths {
 		_, err := os.Stat(p)

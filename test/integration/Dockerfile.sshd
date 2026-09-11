@@ -2,7 +2,7 @@
 # model) with the module and oidc-ssh installed, authenticating `systems`
 # and `ops` against the mock provider — through the device flow and through
 # AuthorizedKeysCommand. Build from the repository root:
-#   docker build -f test/integration/Dockerfile.sshd -t pam-oidc-device-sshd .
+#   docker build -f test/integration/Dockerfile.sshd -t oidc-ssh-sshd .
 FROM debian:bookworm-slim
 
 # busybox provides the syslogd the audit assertions read: oidc-ssh writes its
@@ -17,13 +17,13 @@ RUN apt-get update -qq \
     && mkdir -p /run/sshd \
     && ssh-keygen -A
 
-COPY build/pam_oidc_device.so /tmp/pam_oidc_device.so
+COPY build/pam_oidc_ssh.so /tmp/pam_oidc_ssh.so
 RUN dir="$(dirname "$(find /usr/lib -name pam_permit.so -print -quit)")" \
-    && install -m 0644 /tmp/pam_oidc_device.so "$dir/pam_oidc_device.so" \
-    && rm /tmp/pam_oidc_device.so
+    && install -m 0644 /tmp/pam_oidc_ssh.so "$dir/pam_oidc_ssh.so" \
+    && rm /tmp/pam_oidc_ssh.so
 
-COPY build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
-COPY build/oidc-ssh               /usr/libexec/pam-oidc-device/oidc-ssh
+COPY build/oidc-ssh-helper /usr/libexec/oidc-ssh/oidc-ssh-helper
+COPY build/oidc-ssh               /usr/libexec/oidc-ssh/oidc-ssh
 COPY build/mock-provider          /usr/local/bin/mock-provider
 COPY test/integration/sshd/pam.d-sshd    /etc/pam.d/sshd
 COPY test/integration/sshd/sshd_config   /etc/ssh/sshd_config.d/oidc.conf

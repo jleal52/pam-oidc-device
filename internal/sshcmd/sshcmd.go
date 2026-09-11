@@ -24,14 +24,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/pamlog"
-	"github.com/jleal52/pam-oidc-device/internal/provider"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/pamlog"
+	"github.com/jleal52/oidc-ssh/internal/provider"
 )
 
 // Version is the agent version reported to the provider at enrolment.
 // Release builds stamp it with
-// -ldflags "-X github.com/jleal52/pam-oidc-device/internal/sshcmd.Version=<v>".
+// -ldflags "-X github.com/jleal52/oidc-ssh/internal/sshcmd.Version=<v>".
 var Version = "dev"
 
 // ErrNotRoot is returned by Enroll when the process is not root.

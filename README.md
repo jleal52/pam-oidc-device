@@ -1,6 +1,6 @@
-# pam-oidc-device
+# oidc-ssh
 
-[![CI](https://github.com/jleal52/pam-oidc-device/actions/workflows/ci.yml/badge.svg)](https://github.com/jleal52/pam-oidc-device/actions/workflows/ci.yml)
+[![CI](https://github.com/jleal52/oidc-ssh/actions/workflows/ci.yml/badge.svg)](https://github.com/jleal52/oidc-ssh/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 SSH access to Linux servers governed by your OpenID Connect provider, with no
@@ -53,7 +53,7 @@ the provider advertises support for it (`ssh_device_confirmation_supported`
 in discovery), so an older provider keeps working unchanged. See
 [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md) §6.1.
 
-Status: 0.3.0 — device flow, key-based login and PIN confirmation.
+Status: 1.0.0 — device flow, key-based login and PIN confirmation.
 Tested against an in-house OpenID Connect provider, on Debian 12 and Fedora 41,
 amd64 and arm64.
 
@@ -76,15 +76,15 @@ that are already open when a permission is revoked at the provider.
 
 ## How it works
 
-The module itself (`pam_oidc_device.so`) is a small C shared object. For every
-login it starts the helper `pam-oidc-device-helper`, a static Go binary that
+The module itself (`pam_oidc_ssh.so`) is a small C shared object. For every
+login it starts the helper `oidc-ssh-helper`, a static Go binary that
 does all the work and talks back over a pipe (messages to show, variables to
 export, the final result). No Go runtime ever runs inside the application
 calling PAM, which is what makes the module safe under OpenSSH's process model
 (sshd runs `pam_authenticate` in a child created with `fork()`).
 
 ```
- sshd (keyboard-interactive) → PAM → pam_oidc_device.so         Identity provider          Browser
+ sshd (keyboard-interactive) → PAM → pam_oidc_ssh.so         Identity provider          Browser
  ───────────────────────────────────────────────────────         ─────────────────          ───────
  1. user mapped? no → PAM_IGNORE (no network)
  2. GET  <issuer>/.well-known/openid-configuration ─────────────▶
@@ -110,7 +110,7 @@ What is exported: `<session_env>` (default `OIDC_USER`) with the value of
 control characters or invalid UTF-8 are rejected and the login fails.
 
 What is logged: one line per attempt to syslog facility `authpriv`, tag
-`pam_oidc_device`:
+`pam_oidc_ssh`:
 
 ```
 user=alice@example.com sub=8d2f… local_user=systems rhost=203.0.113.9 host=bastion result=success reason=- err=-
@@ -161,31 +161,25 @@ to the behaviour it had before they existed.
 Releases ship `.deb` (amd64, arm64; depends on `libpam0g`) and `.rpm`
 (x86_64, aarch64; depends on `pam`) packages, the raw shared object,
 `SHA256SUMS`, and a keyless [cosign](https://github.com/sigstore/cosign)
-signature (`.sig` + `.pem`) for every file. From 0.3.0 on they
-also carry an SPDX SBOM: the action that was supposed to produce it silently
-ignored the inputs it was given, so 0.1.0 through 0.2.0 shipped without one.
+signature (`.sig` + `.pem`) for every file, plus an SPDX SBOM.
 Verify before installing:
 
 ```sh
 cosign verify-blob \
-  --certificate pam-oidc-device_0.3.0_amd64.deb.pem \
-  --signature   pam-oidc-device_0.3.0_amd64.deb.sig \
-  --certificate-identity-regexp 'https://github.com/jleal52/pam-oidc-device/.github/workflows/release.yml@refs/tags/v.*' \
+  --certificate oidc-ssh_1.0.0_amd64.deb.pem \
+  --signature   oidc-ssh_1.0.0_amd64.deb.sig \
+  --certificate-identity-regexp 'https://github.com/jleal52/oidc-ssh/.github/workflows/release.yml@refs/tags/v.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  pam-oidc-device_0.3.0_amd64.deb
+  oidc-ssh_1.0.0_amd64.deb
 
-sudo apt-get install ./pam-oidc-device_0.3.0_amd64.deb   # Debian/Ubuntu
-sudo dnf install ./pam-oidc-device-0.3.0-1.x86_64.rpm    # Fedora/RHEL
+sudo apt-get install ./oidc-ssh_1.0.0_amd64.deb   # Debian/Ubuntu
+sudo dnf install ./oidc-ssh-1.0.0-1.x86_64.rpm    # Fedora/RHEL
 ```
 
-Do not use 0.1.0: it does not load on Debian 12 (it needs a glibc symbol that
-distribution does not have). 0.1.1 loads, but reports some successful logins
-as failures; see the changelog.
-
-The package installs `pam_oidc_device.so` into the distribution's PAM module
-directory, the helper and `oidc-ssh` under `/usr/libexec/pam-oidc-device/`,
+The package installs `pam_oidc_ssh.so` into the distribution's PAM module
+directory, the helper and `oidc-ssh` under `/usr/libexec/oidc-ssh/`,
 and an annotated example configuration under
-`/usr/share/doc/pam-oidc-device/config.example.yaml`. It also creates the
+`/usr/share/doc/oidc-ssh/config.example.yaml`. It also creates the
 unprivileged `oidc-ssh` system account that serves `AuthorizedKeysCommand`,
 with `/etc/oidc-ssh` and `/var/cache/oidc-ssh` owned so that account can read
 what enrolment writes. It changes nothing else:
@@ -194,21 +188,19 @@ the module is inert until referenced from `/etc/pam.d`.
 ### From source
 
 ```sh
-make so helper   # build/pam_oidc_device.so (C; Docker if libpam0g-dev is missing) and build/pam-oidc-device-helper (Go, static)
+make so helper   # build/pam_oidc_ssh.so (C; Docker if libpam0g-dev is missing) and build/oidc-ssh-helper (Go, static)
 make check-so    # the three pam_sm_* symbols must be exported
-sudo install -m 0644 build/pam_oidc_device.so /usr/lib/$(gcc -print-multiarch)/security/
-sudo install -D -m 0755 build/pam-oidc-device-helper /usr/libexec/pam-oidc-device/pam-oidc-device-helper
-make package VERSION=0.3.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
+sudo install -m 0644 build/pam_oidc_ssh.so /usr/lib/$(gcc -print-multiarch)/security/
+sudo install -D -m 0755 build/oidc-ssh-helper /usr/libexec/oidc-ssh/oidc-ssh-helper
+make package VERSION=1.0.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
 ```
 
 Requirements: Go 1.26, a C compiler and `libpam0g-dev` (or Docker).
 
 ## Configuration
 
-Default path `/etc/oidc-ssh/config.yaml`; the pre-0.2.0 path
-`/etc/security/pam_oidc_device.yaml` is still read when the default does not
-exist, and another path can be given with the `config=` module argument. The
-file is read on every attempt.
+Default path `/etc/oidc-ssh/config.yaml`; another location can be given with
+the `config=` module argument. The file is read on every attempt.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -241,9 +233,8 @@ users:
 ```
 
 Module arguments in `/etc/pam.d/*`: `config=<path>` (default
-`/etc/oidc-ssh/config.yaml`, falling back to
-`/etc/security/pam_oidc_device.yaml`), `helper=<path>` (default
-`/usr/libexec/pam-oidc-device/pam-oidc-device-helper`), `timeout=<seconds>`
+`/etc/oidc-ssh/config.yaml`), `helper=<path>` (default
+`/usr/libexec/oidc-ssh/oidc-ssh-helper`), `timeout=<seconds>`
 (wall-clock bound for the whole exchange, default 420; the helper is killed
 when it elapses), `debug` (verbose syslog, ignored attempts at DEBUG).
 
@@ -260,14 +251,14 @@ No password, no `authorized_keys`. `/etc/pam.d/sshd`, first line of the
 `auth` block:
 
 ```
-auth  [success=done ignore=ignore default=die]  pam_oidc_device.so
+auth  [success=done ignore=ignore default=die]  pam_oidc_ssh.so
 ```
 
 Why not `required`: the module returns `PAM_IGNORE` for accounts that are not
 in `users`, which `required` treats as a failure; the control above lets those
 accounts fall through to the next module (`pam_unix`, keys, …). The module
 needs no line in the `account` stack (`pam_sm_acct_mgmt` returns `PAM_IGNORE`
-so that a stray `account required pam_oidc_device.so` cannot let everyone in).
+so that a stray `account required pam_oidc_ssh.so` cannot let everyone in).
 
 `/etc/ssh/sshd_config` (check with `sshd -t`, then reload):
 
@@ -343,7 +334,7 @@ enrolment whose body does not match what was approved.
 Then, in `/etc/ssh/sshd_config`:
 
 ```
-AuthorizedKeysCommand /usr/libexec/pam-oidc-device/oidc-ssh authorized-keys %u %f
+AuthorizedKeysCommand /usr/libexec/oidc-ssh/oidc-ssh authorized-keys %u %f
 AuthorizedKeysCommandUser oidc-ssh
 PermitUserEnvironment OIDC_USER,OIDC_SUB
 
@@ -463,7 +454,7 @@ Test a service without sshd:
 
 ```sh
 cat >/etc/pam.d/oidc-test <<'EOF'
-auth    required pam_oidc_device.so debug
+auth    required pam_oidc_ssh.so debug
 account required pam_permit.so
 EOF
 pamtester oidc-test systems authenticate
@@ -477,11 +468,11 @@ make lint          # golangci-lint (config in .golangci.yml)
 make so helper oidc-ssh check-so   # the C module (Docker fallback), the Go helper and the oidc-ssh binary; check exported symbols
 make integration          # pamtester scenarios in a Debian container against a mock provider
 make integration-sshd     # the same through a real OpenSSH server and client (fork model)
-make package VERSION=0.3.0 ARCH=amd64
+make package VERSION=1.0.0 ARCH=amd64
 ```
 
-Layout: `pam/pam_oidc_device.c` (the PAM module: exec the helper, relay the
-line protocol), `cmd/pam-oidc-device-helper` (the helper process),
+Layout: `pam/pam_oidc_ssh.c` (the PAM module: exec the helper, relay the
+line protocol), `cmd/oidc-ssh-helper` (the helper process),
 `cmd/oidc-ssh` (flag wiring only; the logic lives in `internal/sshcmd` so it
 is testable without building a binary or being root), `internal/config`
 (YAML), `internal/oidc` (discovery, device flow, ID token verification, on

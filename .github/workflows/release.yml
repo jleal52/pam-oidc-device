@@ -4,7 +4,7 @@
 #
 #   cosign verify-blob \
 #     --certificate <file>.pem --signature <file>.sig \
-#     --certificate-identity-regexp 'https://github.com/jleal52/pam-oidc-device/.github/workflows/release.yml@refs/tags/v.*' \
+#     --certificate-identity-regexp 'https://github.com/jleal52/oidc-ssh/.github/workflows/release.yml@refs/tags/v.*' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
 #     <file>
 name: Release
@@ -49,7 +49,7 @@ jobs:
         run: |
           mkdir -p out
           cp dist/* out/
-          cp build/pam_oidc_device.so "out/pam_oidc_device-linux-${{ matrix.arch }}.so"
+          cp build/pam_oidc_ssh.so "out/pam_oidc_ssh-linux-${{ matrix.arch }}.so"
           ls -l out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -81,11 +81,11 @@ jobs:
         with:
           path: .
           format: spdx-json
-          output-file: dist/pam-oidc-device-${{ github.ref_name }}.sbom.spdx.json
+          output-file: dist/oidc-ssh-${{ github.ref_name }}.sbom.spdx.json
           upload-artifact: false
           upload-release-assets: false
       - name: The SBOM must exist before it is checksummed and signed
-        run: test -s "dist/pam-oidc-device-${GITHUB_REF_NAME}.sbom.spdx.json"
+        run: test -s "dist/oidc-ssh-${GITHUB_REF_NAME}.sbom.spdx.json"
       - name: Checksums
         run: cd dist && sha256sum -- * > SHA256SUMS
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2

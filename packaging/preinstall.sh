@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pre-install script for pam-oidc-device (deb and rpm).
+# Pre-install script for oidc-ssh (deb and rpm).
 #
 # Creates the unprivileged system account that sshd runs
 # AuthorizedKeysCommand as. It has to exist before the package lays down

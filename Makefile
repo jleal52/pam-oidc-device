@@ -1,8 +1,8 @@
-# pam-oidc-device build entry points.
+# oidc-ssh build entry points.
 #
-# The PAM module (pam/pam_oidc_device.c) is plain C and needs
+# The PAM module (pam/pam_oidc_ssh.c) is plain C and needs
 # <security/pam_modules.h> (libpam0g-dev) plus a C compiler; the helper it
-# execs (cmd/pam-oidc-device-helper) is a static Go binary. `make so` builds
+# execs (cmd/oidc-ssh-helper) is a static Go binary. `make so` builds
 # the module natively when the headers are present and inside Docker
 # otherwise; `go test ./...` never needs the headers.
 
@@ -10,17 +10,17 @@ GO             ?= go
 GOFLAGS_COMMON ?= -trimpath -buildvcs=false
 GOFLAGS_BIN    ?= $(GOFLAGS_COMMON) -ldflags='-s -w'
 # oidc-ssh additionally reports its version to the provider at enrolment.
-GOFLAGS_SSH    ?= $(GOFLAGS_COMMON) -ldflags='-s -w -X github.com/jleal52/pam-oidc-device/internal/sshcmd.Version=$(VERSION)'
+GOFLAGS_SSH    ?= $(GOFLAGS_COMMON) -ldflags='-s -w -X github.com/jleal52/oidc-ssh/internal/sshcmd.Version=$(VERSION)'
 CC          ?= cc
 CFLAGS_SO   ?= -O2 -Wall -Wextra -Werror -fPIC -shared -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wl,-z,relro,-z,now
 BUILD_DIR   ?= build
-SO          ?= $(BUILD_DIR)/pam_oidc_device.so
-HELPER      ?= $(BUILD_DIR)/pam-oidc-device-helper
+SO          ?= $(BUILD_DIR)/pam_oidc_ssh.so
+HELPER      ?= $(BUILD_DIR)/oidc-ssh-helper
 OIDC_SSH    ?= $(BUILD_DIR)/oidc-ssh
 PAM_HEADER  ?= /usr/include/security/pam_modules.h
 DOCKER_IMG  ?= golang:1.26-bookworm
-GOMOD_CACHE ?= pam-oidc-device-gomod
-GOBUILD_CACHE ?= pam-oidc-device-gocache
+GOMOD_CACHE ?= oidc-ssh-gomod
+GOBUILD_CACHE ?= oidc-ssh-gocache
 
 # Runs a shell command in a throwaway container with libpam0g-dev and the
 # repository mounted at /src. Module and build caches persist in named
@@ -49,12 +49,12 @@ vet:
 
 so-native:
 	mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS_SO) -o $(SO) pam/pam_oidc_device.c -lpam
+	$(CC) $(CFLAGS_SO) -o $(SO) pam/pam_oidc_ssh.c -lpam
 
 # Static helper binary exec'ed by the module for every login.
 helper:
 	mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS_BIN) -o $(HELPER) ./cmd/pam-oidc-device-helper
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS_BIN) -o $(HELPER) ./cmd/oidc-ssh-helper
 
 # Static oidc-ssh binary: enrolment, AuthorizedKeysCommand and status.
 oidc-ssh:
@@ -93,7 +93,7 @@ check-so:
 		$(call docker_run,$(CHECK_SO_CMD)); \
 	fi
 
-# Builds dist/pam-oidc-device_<version>_<arch>.{deb,rpm} with nfpm, run from
+# Builds dist/oidc-ssh_<version>_<arch>.{deb,rpm} with nfpm, run from
 # its Docker image so that nothing is added to go.mod or the host. The deb
 # puts the module under the multiarch directory of ARCH, the rpm under
 # /usr/lib64/security. `so` builds for the host architecture, so the package
@@ -132,7 +132,7 @@ package: so helper oidc-ssh check-glibc
 
 # Builds the module (Docker if needed) and the static mock provider, then runs
 # the pamtester scenarios in a stock Debian container (test/integration/run.sh).
-IT_IMG ?= pam-oidc-device-it
+IT_IMG ?= oidc-ssh-it
 mock-provider:
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS_BIN) -o $(BUILD_DIR)/mock-provider ./cmd/mock-provider
 
@@ -144,7 +144,7 @@ integration: so helper mock-provider
 # through its fork model, host enrolment, AuthorizedKeysCommand, the
 # last-known-good cache when the provider is broken, and the key options
 # sshd is allowed to apply.
-IT_SSHD_IMG ?= pam-oidc-device-sshd
+IT_SSHD_IMG ?= oidc-ssh-sshd
 integration-sshd: so helper oidc-ssh mock-provider
 	docker build -q -f test/integration/Dockerfile.sshd -t $(IT_SSHD_IMG) .
 	docker run --rm $(IT_SSHD_IMG)

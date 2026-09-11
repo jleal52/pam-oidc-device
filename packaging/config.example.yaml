@@ -1,9 +1,8 @@
-# pam-oidc-device configuration, shared by the PAM module and oidc-ssh.
+# oidc-ssh configuration, shared by the PAM module and oidc-ssh.
 #
 # Copy to /etc/oidc-ssh/config.yaml (the default path; another location can
-# be given with the "config=" module argument). The pre-0.2.0 path
-# /etc/security/pam_oidc_device.yaml is still read when the default does not
-# exist. Make the file readable by root and the oidc-ssh user only (0640
+# be given with the "config=" module argument).
+# Make the file readable by root and the oidc-ssh user only (0640
 # root:oidc-ssh) and adjust the values below. The file is read on every
 # login attempt, so edits take effect immediately.
 #

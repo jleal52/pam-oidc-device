@@ -25,7 +25,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/jleal52/pam-oidc-device/internal/testprovider"
+	"github.com/jleal52/oidc-ssh/internal/testprovider"
 )
 
 func main() {

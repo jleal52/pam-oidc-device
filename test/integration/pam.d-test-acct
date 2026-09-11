@@ -1,4 +1,4 @@
 # Test service: the account stack holds only this module. pam_sm_acct_mgmt
 # returns PAM_IGNORE, so the stack has no verdict and pam_acct_mgmt fails:
 # the module must never pass the account phase by itself.
-account required    pam_oidc_device.so config=/etc/pam_oidc_device.yaml
+account required    pam_oidc_ssh.so config=/etc/pam_oidc_ssh.yaml

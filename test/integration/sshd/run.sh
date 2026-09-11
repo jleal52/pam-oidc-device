@@ -25,7 +25,7 @@ SYSLOGD_PID=""
 SSHD_LOG=$WORK/sshd.log
 SYSLOG=/var/log/oidc-ssh.log
 
-OIDC_SSH=/usr/libexec/pam-oidc-device/oidc-ssh
+OIDC_SSH=/usr/libexec/oidc-ssh/oidc-ssh
 CONFIG=/etc/oidc-ssh/config.yaml
 HOST_KEY=/etc/oidc-ssh/host.key
 CACHE=/var/cache/oidc-ssh

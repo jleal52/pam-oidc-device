@@ -2,6 +2,6 @@
 # success=done  -> an approved login ends the stack successfully
 # ignore=ignore -> an unmapped user is passed to the next module
 # default=die   -> any other result denies immediately
-auth    [success=done ignore=ignore default=die]    pam_oidc_device.so config=/etc/pam_oidc_device.yaml
+auth    [success=done ignore=ignore default=die]    pam_oidc_ssh.so config=/etc/pam_oidc_ssh.yaml
 auth    required    pam_permit.so
 account required    pam_permit.so

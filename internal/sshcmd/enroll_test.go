@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jleal52/pam-oidc-device/internal/keycache"
+	"github.com/jleal52/oidc-ssh/internal/keycache"
 )
 
 // enrollFixture is a host that has not been enrolled yet.
@@ -156,7 +156,7 @@ func TestEnrollRegistersTheHostAndRewritesTheConfiguration(t *testing.T) {
 		"Open "+f.provider.issuer,
 		"Generated a host key",
 		"host id:   "+hostID,
-		"AuthorizedKeysCommand /usr/libexec/pam-oidc-device/oidc-ssh authorized-keys %u %f",
+		"AuthorizedKeysCommand /usr/libexec/oidc-ssh/oidc-ssh authorized-keys %u %f",
 		"AuthorizedKeysCommandUser oidc-ssh",
 		"PermitUserEnvironment OIDC_USER,OIDC_SUB",
 		"LoginGraceTime 50",

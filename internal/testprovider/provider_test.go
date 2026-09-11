@@ -24,7 +24,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/jleal52/pam-oidc-device/internal/hostid"
+	"github.com/jleal52/oidc-ssh/internal/hostid"
 )
 
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code"

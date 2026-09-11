@@ -20,7 +20,7 @@ import (
 	"log/syslog"
 	"os"
 
-	"github.com/jleal52/pam-oidc-device/internal/sshcmd"
+	"github.com/jleal52/oidc-ssh/internal/sshcmd"
 )
 
 // syslogTag identifies this tool's lines in the authpriv facility.

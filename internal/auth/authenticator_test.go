@@ -11,9 +11,9 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/jleal52/pam-oidc-device/internal/auth"
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/oidc"
+	"github.com/jleal52/oidc-ssh/internal/auth"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/oidc"
 )
 
 const testYAML = `

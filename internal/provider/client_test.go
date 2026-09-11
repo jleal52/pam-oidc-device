@@ -18,9 +18,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/jleal52/pam-oidc-device/internal/hostid"
-	"github.com/jleal52/pam-oidc-device/internal/provider"
-	"github.com/jleal52/pam-oidc-device/internal/testprovider"
+	"github.com/jleal52/oidc-ssh/internal/hostid"
+	"github.com/jleal52/oidc-ssh/internal/provider"
+	"github.com/jleal52/oidc-ssh/internal/testprovider"
 )
 
 // escape is a terminal escape sequence: provider-supplied text that must

@@ -1,2 +1,2 @@
-// Package internal holds the implementation of pam-oidc-device.
+// Package internal holds the implementation of oidc-ssh.
 package internal

@@ -379,7 +379,7 @@ func TestParseUsesOSHostname(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "pam_oidc_device.yaml")
+	path := filepath.Join(dir, "pam_oidc_ssh.yaml")
 	if err := os.WriteFile(path, []byte(minimalYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -451,11 +451,12 @@ func TestDefaultPath(t *testing.T) {
 	if DefaultPath != "/etc/oidc-ssh/config.yaml" {
 		t.Errorf("DefaultPath = %q", DefaultPath)
 	}
-	if LegacyPath != "/etc/security/pam_oidc_device.yaml" {
-		t.Errorf("LegacyPath = %q", LegacyPath)
-	}
-	if len(defaultPaths) != 2 || defaultPaths[0] != DefaultPath || defaultPaths[1] != LegacyPath {
-		t.Errorf("defaultPaths = %v, want [DefaultPath LegacyPath]", defaultPaths)
+	// Since 1.0.0 there is exactly one default location. The pre-0.2.0 path
+	// under /etc/security was dropped with the rename: keeping a fallback
+	// named after the old project would have kept that name alive on disk
+	// forever. This asserts nobody puts it back by reflex.
+	if len(defaultPaths) != 1 || defaultPaths[0] != DefaultPath {
+		t.Errorf("defaultPaths = %v, want [DefaultPath]", defaultPaths)
 	}
 }
 

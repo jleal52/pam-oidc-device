@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/sshcmd"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/sshcmd"
 )
 
 // runStatus parses the flags of "oidc-ssh status" and runs it. It exits
@@ -25,7 +25,7 @@ flags:
 `)
 		fs.PrintDefaults()
 	}
-	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+", then "+config.LegacyPath+")")
+	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+")")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}

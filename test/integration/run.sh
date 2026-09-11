@@ -77,7 +77,7 @@ expect_absent() {
     ! grep -qF -- "$3" "$2" || fail "$1: did not expect '$3' in $(basename "$2")" "$WORK/out" "$WORK/err" "$WORK/mock.err"
 }
 
-echo "== module: $(find /usr/lib -name pam_oidc_device.so -print -quit)"
+echo "== module: $(find /usr/lib -name pam_oidc_ssh.so -print -quit)"
 echo "== pamtester: $(pamtester 2>&1 | head -1 || true)"
 
 # (a) approved login as a mapped user with the right group
@@ -164,12 +164,10 @@ expect "$scenario" "$WORK/err" "result=error"
 expect "$scenario" "$WORK/err" "reason=provider_unavailable"
 echo "PASS $scenario (${elapsed}s)"
 
-# (f) no config= in pam.d: the helper picks the file, and the image ships it
-# only at the 0.2 path. Guards the regression where the module hardcoded the
-# legacy path and a host enrolled with `oidc-ssh` wrote its identity to a file
-# that logins never read.
+# (f) no config= in pam.d: the helper resolves the file itself. Guards the
+# regression where the module hardcoded a path, so a host enrolled with
+# `oidc-ssh` wrote its identity to a file that logins never read.
 scenario=default-config-path
-[[ ! -e /etc/security/pam_oidc_device.yaml ]] || fail "$scenario: the legacy path exists, the scenario proves nothing"
 start_mock --outcome approved --pending 1 --groups ssh:admin
 run_pamtester oidc-test-default systems
 [[ $RC -eq 0 ]] || fail "$scenario: exit $RC, want 0" "$WORK/out" "$WORK/err" "$WORK/mock.err"

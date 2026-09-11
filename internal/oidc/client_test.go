@@ -19,8 +19,8 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/jleal52/pam-oidc-device/internal/oidc"
-	"github.com/jleal52/pam-oidc-device/internal/testprovider"
+	"github.com/jleal52/oidc-ssh/internal/oidc"
+	"github.com/jleal52/oidc-ssh/internal/testprovider"
 )
 
 const testScope = "openid profile groups"

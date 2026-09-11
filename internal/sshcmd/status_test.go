@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/keycache"
-	"github.com/jleal52/pam-oidc-device/internal/testprovider"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/keycache"
+	"github.com/jleal52/oidc-ssh/internal/testprovider"
 )
 
 // newStatusFixture returns an enrolled host with a warm cache and an

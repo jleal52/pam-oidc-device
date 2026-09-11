@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jleal52/pam-oidc-device/internal/testprovider"
+	"github.com/jleal52/oidc-ssh/internal/testprovider"
 )
 
 // keysFixture is an enrolled host talking to a fake provider.

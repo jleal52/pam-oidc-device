@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/sshcmd"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/sshcmd"
 )
 
 // runAuthorizedKeys parses the arguments sshd passes through
@@ -26,14 +26,14 @@ func runAuthorizedKeys(args []string) int {
 Prints the authorized_keys lines the provider allows for <account> on this
 host. Meant to be run by sshd:
 
-    AuthorizedKeysCommand /usr/libexec/pam-oidc-device/oidc-ssh authorized-keys %u %f
+    AuthorizedKeysCommand /usr/libexec/oidc-ssh/oidc-ssh authorized-keys %u %f
     AuthorizedKeysCommandUser oidc-ssh
 
 flags:
 `)
 		fs.PrintDefaults()
 	}
-	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+", then "+config.LegacyPath+")")
+	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+")")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}

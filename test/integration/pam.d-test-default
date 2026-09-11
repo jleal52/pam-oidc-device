@@ -2,5 +2,5 @@
 # the file itself, trying /etc/oidc-ssh/config.yaml before the legacy path.
 # The image ships the configuration ONLY at the new path, so a module that
 # hardcodes the legacy one fails this service outright.
-auth    required    pam_oidc_device.so debug
+auth    required    pam_oidc_ssh.so debug
 account required    pam_permit.so

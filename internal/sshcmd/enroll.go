@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/hostid"
-	"github.com/jleal52/pam-oidc-device/internal/keycache"
-	"github.com/jleal52/pam-oidc-device/internal/oidc"
-	"github.com/jleal52/pam-oidc-device/internal/provider"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/hostid"
+	"github.com/jleal52/oidc-ssh/internal/keycache"
+	"github.com/jleal52/oidc-ssh/internal/oidc"
+	"github.com/jleal52/oidc-ssh/internal/provider"
 )
 
 // intentEnroll is the device flow intent that asks the provider for an
@@ -34,7 +34,7 @@ const identityDirMode = 0o750
 // defaultCommandPath is where the packages install the binary; it is only
 // used in the suggested sshd configuration when the running executable
 // cannot be located.
-const defaultCommandPath = "/usr/libexec/pam-oidc-device/oidc-ssh"
+const defaultCommandPath = "/usr/libexec/oidc-ssh/oidc-ssh"
 
 // EnrollOptions are the command line arguments of "oidc-ssh enroll".
 // Issuer, ClientID and APIBase override the configured values and are

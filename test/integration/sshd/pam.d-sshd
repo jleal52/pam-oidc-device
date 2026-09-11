@@ -1,9 +1,9 @@
 # Test PAM stack for sshd: the module first, unmapped users fall through.
 #
-# config= is spelled out because the module's own default is still the
-# pre-0.2 path (/etc/security/pam_oidc_device.yaml), while this host keeps
-# the one file oidc-ssh also reads and rewrites at /etc/oidc-ssh/config.yaml.
-auth     [success=done ignore=ignore default=die]  pam_oidc_device.so debug config=/etc/oidc-ssh/config.yaml
+# config= is spelled out on purpose: this stack exercises the explicit
+# argument. Scenario (f) of run.sh covers the other half, a stack without it,
+# where the helper resolves /etc/oidc-ssh/config.yaml by itself.
+auth     [success=done ignore=ignore default=die]  pam_oidc_ssh.so debug config=/etc/oidc-ssh/config.yaml
 auth     required   pam_deny.so
 account  required   pam_permit.so
 session  required   pam_permit.so

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jleal52/pam-oidc-device/internal/pamlog"
+	"github.com/jleal52/oidc-ssh/internal/pamlog"
 )
 
 func TestSanitize(t *testing.T) {

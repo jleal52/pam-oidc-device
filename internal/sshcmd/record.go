@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jleal52/pam-oidc-device/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/config"
 )
 
 // recordName is the file, inside the cache directory, where enrolment

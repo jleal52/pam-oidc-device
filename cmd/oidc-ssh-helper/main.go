@@ -1,7 +1,7 @@
-// pam-oidc-device-helper runs one authentication attempt on behalf of the
-// pam_oidc_device PAM module and reports back over stdout.
+// oidc-ssh-helper runs one authentication attempt on behalf of the
+// pam_oidc_ssh PAM module and reports back over stdout.
 //
-// The module itself is a thin C shared object (pam/pam_oidc_device.c): it
+// The module itself is a thin C shared object (pam/pam_oidc_ssh.c): it
 // execs this binary for every login so that no Go runtime ever lives inside
 // the application calling PAM. That matters for OpenSSH, which runs
 // pam_authenticate in a child created with fork(), an environment where a Go
@@ -16,8 +16,7 @@
 //	E <NAME>=<value>    environment variable to export into the session
 //	R <code> <reason>   final result: success | ignore | auth_err | authinfo_unavail | user_unknown
 //
-// Flags: --config <path> (default: the first existing of
-// /etc/oidc-ssh/config.yaml and /etc/security/pam_oidc_device.yaml),
+// Flags: --config <path> (default /etc/oidc-ssh/config.yaml),
 // --user <local account>, --rhost <client address>, --debug. The audit line
 // goes to syslog (authpriv), or to stderr when syslog is unavailable.
 //
@@ -41,15 +40,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jleal52/pam-oidc-device/internal/auth"
-	"github.com/jleal52/pam-oidc-device/internal/config"
-	"github.com/jleal52/pam-oidc-device/internal/hostid"
-	"github.com/jleal52/pam-oidc-device/internal/oidc"
-	"github.com/jleal52/pam-oidc-device/internal/pamlog"
-	"github.com/jleal52/pam-oidc-device/internal/provider"
+	"github.com/jleal52/oidc-ssh/internal/auth"
+	"github.com/jleal52/oidc-ssh/internal/config"
+	"github.com/jleal52/oidc-ssh/internal/hostid"
+	"github.com/jleal52/oidc-ssh/internal/oidc"
+	"github.com/jleal52/oidc-ssh/internal/pamlog"
+	"github.com/jleal52/oidc-ssh/internal/provider"
 )
 
-const syslogTag = "pam_oidc_device"
+const syslogTag = "pam_oidc_ssh"
 
 // discoveryTimeoutFactor bounds discovery (metadata document plus, in the
 // worst case, redirect handling and TLS setup) to a small multiple of the
@@ -76,9 +75,9 @@ const (
 var errInvalidEnv = errors.New("invalid environment value")
 
 func main() {
-	fs := flag.NewFlagSet("pam-oidc-device-helper", flag.ContinueOnError)
+	fs := flag.NewFlagSet("oidc-ssh-helper", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+", then "+config.LegacyPath+")")
+	configPath := fs.String("config", "", "configuration file (default: "+config.DefaultPath+")")
 	user := fs.String("user", "", "local account requested from PAM")
 	rhost := fs.String("rhost", "", "client address (PAM_RHOST)")
 	debug := fs.Bool("debug", false, "verbose syslog")

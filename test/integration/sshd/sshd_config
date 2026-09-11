@@ -16,7 +16,7 @@ PermitRootLogin no
 LoginGraceTime 60
 LogLevel DEBUG1
 
-AuthorizedKeysCommand /usr/libexec/pam-oidc-device/oidc-ssh authorized-keys %u %f
+AuthorizedKeysCommand /usr/libexec/oidc-ssh/oidc-ssh authorized-keys %u %f
 AuthorizedKeysCommandUser oidc-ssh
 # Only these two may come from an authorized_keys "environment=" option. The
 # provider is a remote party: anything else it sends, sshd must drop.
