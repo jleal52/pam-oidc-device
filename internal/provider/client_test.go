@@ -916,3 +916,71 @@ func TestResolveBaseMatchesDiscovery(t *testing.T) {
 		t.Errorf("ResolveBase from the issuer = %q, want %q", got, p.SSHBase())
 	}
 }
+
+// A provider that answers a validation failure the way most REST stacks do —
+// the useful sentence under "message", not under "error_description" — must
+// still reach the operator. Without this the host printed
+// `HTTP 400 (Bad Request)` and swallowed the one line that said what to fix;
+// it cost a failed enrolment on a server whose hostname was uppercase.
+func TestErrorBodyUsesMessageWhenThereIsNoDescription(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "message as an array, the NestJS shape",
+			body: `{"error":"Bad Request","message":["name must be lowercase"],"statusCode":400}`,
+			want: "name must be lowercase",
+		},
+		{
+			name: "message as a plain string",
+			body: `{"error":"Bad Request","message":"name must be lowercase"}`,
+			want: "name must be lowercase",
+		},
+		{
+			name: "several messages are joined",
+			body: `{"error":"Bad Request","message":["bad name","bad group"]}`,
+			want: "bad name; bad group",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, _ := stubServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			_, err := c.AuthorizedKeys(context.Background(), "assertion", "systems", "", "")
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			if msg := err.Error(); !strings.Contains(msg, tc.want) {
+				t.Errorf("error = %q, want it to carry %q", msg, tc.want)
+			}
+		})
+	}
+}
+
+// error_description still wins: a provider that speaks the OAuth shape must
+// not have its description replaced by whatever it also puts in "message".
+func TestErrorBodyPrefersErrorDescription(t *testing.T) {
+	t.Parallel()
+	c, _ := stubServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"the real reason","message":"noise"}`))
+	})
+	_, err := c.AuthorizedKeys(context.Background(), "assertion", "systems", "", "")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "the real reason") {
+		t.Errorf("error = %q, want the description", msg)
+	}
+	if strings.Contains(msg, "noise") {
+		t.Errorf("error = %q, want it to ignore message when a description exists", msg)
+	}
+}

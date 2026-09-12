@@ -48,6 +48,14 @@ overrides:
         dst: /usr/libexec/oidc-ssh/oidc-ssh
         file_info:
           mode: 0755
+      # `oidc-ssh` es la herramienta que teclea una persona (enroll, status),
+      # y /usr/libexec no está en el PATH de nadie: sin este enlace, la
+      # documentación —incluida la que imprime este mismo paquete— manda
+      # ejecutar un comando que responde "command not found". Va a /usr/sbin
+      # porque necesita root: escribe /etc/oidc-ssh y lee ficheros 0640.
+      - src: /usr/libexec/oidc-ssh/oidc-ssh
+        dst: /usr/sbin/oidc-ssh
+        type: symlink
       # 2750, setgid: whatever `oidc-ssh enroll` writes here (host.key,
       # config.yaml) inherits the group, so the AuthorizedKeysCommand user
       # can read it. Without the setgid bit those files are created
@@ -86,6 +94,14 @@ overrides:
         dst: /usr/libexec/oidc-ssh/oidc-ssh
         file_info:
           mode: 0755
+      # `oidc-ssh` es la herramienta que teclea una persona (enroll, status),
+      # y /usr/libexec no está en el PATH de nadie: sin este enlace, la
+      # documentación —incluida la que imprime este mismo paquete— manda
+      # ejecutar un comando que responde "command not found". Va a /usr/sbin
+      # porque necesita root: escribe /etc/oidc-ssh y lee ficheros 0640.
+      - src: /usr/libexec/oidc-ssh/oidc-ssh
+        dst: /usr/sbin/oidc-ssh
+        type: symlink
       # 2750, setgid: whatever `oidc-ssh enroll` writes here (host.key,
       # config.yaml) inherits the group, so the AuthorizedKeysCommand user
       # can read it. Without the setgid bit those files are created

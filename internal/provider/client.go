@@ -504,13 +504,39 @@ func jsonError(contentType string, body []byte) (code, description string) {
 		return "", ""
 	}
 	var payload struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
+		Error            string          `json:"error"`
+		ErrorDescription string          `json:"error_description"`
+		Message          json.RawMessage `json:"message"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", ""
 	}
+	if payload.ErrorDescription == "" {
+		payload.ErrorDescription = messageText(payload.Message)
+	}
 	return payload.Error, payload.ErrorDescription
+}
+
+// messageText reads the `message` field that most REST stacks put the useful
+// part of a 400 in, as either a string or an array of them. The contract
+// (§4.2) fixes status codes, not a body shape, so a provider that answers
+// {"error":"Bad Request","message":["name must be lowercase"]} is within its
+// rights — and without this the host printed only "HTTP 400 (Bad Request)"
+// and threw away the one sentence that said what to fix. Seen for real while
+// enrolling a host whose hostname was uppercase.
+func messageText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return one
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err == nil {
+		return strings.Join(many, "; ")
+	}
+	return ""
 }
 
 // sanitizeProviderText makes provider-supplied text safe for a log line:

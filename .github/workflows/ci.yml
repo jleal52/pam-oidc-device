@@ -106,6 +106,11 @@ jobs:
             install -m 0640 /dev/null /etc/oidc-ssh/host.key
             test "$(stat -c %G /etc/oidc-ssh/host.key)" = oidc-ssh
             runuser -u oidc-ssh -- /usr/libexec/oidc-ssh/oidc-ssh authorized-keys systems
+            # The docs (and this package postinstall) tell people to run
+            # `oidc-ssh enroll`. If it is not on PATH that instruction is a
+            # lie, which is exactly what happened on a real server.
+            command -v oidc-ssh >/dev/null
+            oidc-ssh --help >/dev/null 2>&1 || oidc-ssh status >/dev/null 2>&1 || true
             apt-get install -y -qq --reinstall /d/oidc-ssh_0.0.0~ci_amd64.deb >/dev/null
           '
       - name: Install the rpm (Fedora 41) and check the account and modes
@@ -116,4 +121,5 @@ jobs:
             test "$(stat -c %a /etc/oidc-ssh)" = 2750
             test "$(stat -c %U:%G /var/cache/oidc-ssh)" = oidc-ssh:oidc-ssh
             test -x /usr/libexec/oidc-ssh/oidc-ssh
+            command -v oidc-ssh >/dev/null
           '
