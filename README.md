@@ -53,7 +53,7 @@ the provider advertises support for it (`ssh_device_confirmation_supported`
 in discovery), so an older provider keeps working unchanged. See
 [docs/PROVIDER-CONTRACT.md](docs/PROVIDER-CONTRACT.md) §6.1.
 
-Status: 1.0.0 — device flow, key-based login and PIN confirmation.
+Status: 1.0.1 — device flow, key-based login and PIN confirmation.
 Tested against an in-house OpenID Connect provider, on Debian 12 and Fedora 41,
 amd64 and arm64.
 
@@ -166,14 +166,14 @@ Verify before installing:
 
 ```sh
 cosign verify-blob \
-  --certificate oidc-ssh_1.0.0_amd64.deb.pem \
-  --signature   oidc-ssh_1.0.0_amd64.deb.sig \
+  --certificate oidc-ssh_1.0.1_amd64.deb.pem \
+  --signature   oidc-ssh_1.0.1_amd64.deb.sig \
   --certificate-identity-regexp 'https://github.com/jleal52/oidc-ssh/.github/workflows/release.yml@refs/tags/v.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  oidc-ssh_1.0.0_amd64.deb
+  oidc-ssh_1.0.1_amd64.deb
 
-sudo apt-get install ./oidc-ssh_1.0.0_amd64.deb   # Debian/Ubuntu
-sudo dnf install ./oidc-ssh-1.0.0-1.x86_64.rpm    # Fedora/RHEL
+sudo apt-get install ./oidc-ssh_1.0.1_amd64.deb   # Debian/Ubuntu
+sudo dnf install ./oidc-ssh-1.0.1-1.x86_64.rpm    # Fedora/RHEL
 ```
 
 The package installs `pam_oidc_ssh.so` into the distribution's PAM module
@@ -192,7 +192,7 @@ make so helper   # build/pam_oidc_ssh.so (C; Docker if libpam0g-dev is missing) 
 make check-so    # the three pam_sm_* symbols must be exported
 sudo install -m 0644 build/pam_oidc_ssh.so /usr/lib/$(gcc -print-multiarch)/security/
 sudo install -D -m 0755 build/oidc-ssh-helper /usr/libexec/oidc-ssh/oidc-ssh-helper
-make package VERSION=1.0.0 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
+make package VERSION=1.0.1 ARCH=amd64   # dist/*.deb and *.rpm via nfpm (Docker)
 ```
 
 Requirements: Go 1.26, a C compiler and `libpam0g-dev` (or Docker).
@@ -468,7 +468,7 @@ make lint          # golangci-lint (config in .golangci.yml)
 make so helper oidc-ssh check-so   # the C module (Docker fallback), the Go helper and the oidc-ssh binary; check exported symbols
 make integration          # pamtester scenarios in a Debian container against a mock provider
 make integration-sshd     # the same through a real OpenSSH server and client (fork model)
-make package VERSION=1.0.0 ARCH=amd64
+make package VERSION=1.0.1 ARCH=amd64
 ```
 
 Layout: `pam/pam_oidc_ssh.c` (the PAM module: exec the helper, relay the

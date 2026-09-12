@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-09-12
+
+Two failures from one real enrolment, neither of them the operator's fault.
+
+### Fixed
+
+- `oidc-ssh` is on `PATH`. The command lives under `/usr/libexec`, which is on
+  nobody's `PATH`, while the documentation — this package's own postinstall
+  message included — tells people to run `oidc-ssh enroll`. A symlink in
+  `/usr/sbin` fixes it, and CI now asserts the command is reachable after
+  installing: an instruction that does not work is worse than a missing one.
+- The provider's reason reaches the operator. An enrolment refused with
+  `HTTP 400 (Bad Request)` and nothing else; the provider had said why, but
+  under `message`, the field most REST stacks use, while this client only read
+  the OAuth pair `error`/`error_description`. The contract (§4.2) fixes status
+  codes, not a body shape, so being liberal in what we read costs nothing and
+  turns a dead end into an instruction. `error_description` still wins when
+  both are present.
+
+[1.0.1]: https://github.com/jleal52/oidc-ssh/releases/tag/v1.0.1
+
 ## [1.0.0] - 2026-09-11
 
 First stable release, and a rename: the project is now **oidc-ssh**, after the
